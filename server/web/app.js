@@ -10,6 +10,7 @@ let charts = {};
 let devicePage = 0;
 let deviceLimit = 25;
 let deviceSearch = '';
+let connectPendingId = null;
 
 function $(sel) { return document.querySelector(sel); }
 
@@ -143,8 +144,8 @@ async function loadDevices() {
   tbody.innerHTML = '';
   devices.forEach(d => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${d.hostname}</td><td class="status-${d.status}">${d.status}</td><td>${d.os}</td><td>${d.cpu_percent?.toFixed(1)}</td><td>${d.memory_percent?.toFixed(1)}</td><td>${d.disk_percent?.toFixed(1)}</td><td>${formatDate(d.last_seen)}</td><td>${d.group}</td><td><button data-id="${d.id}">Open</button></td>`;
-    tr.querySelector('button').addEventListener('click', () => openDevice(d.id));
+    tr.innerHTML = `<td>${d.hostname}</td><td class="status-${d.status}">${d.status}</td><td>${d.os}</td><td>${d.cpu_percent?.toFixed(1)}</td><td>${d.memory_percent?.toFixed(1)}</td><td>${d.disk_percent?.toFixed(1)}</td><td>${formatDate(d.last_seen)}</td><td>${d.group}</td><td><button data-id="${d.id}" class="connect-btn">Connect</button></td>`;
+    tr.querySelector('button').addEventListener('click', () => showConnectModal(d.id, d.hostname));
     tbody.appendChild(tr);
   });
   const pages = Math.ceil(total / deviceLimit) || 1;
@@ -153,14 +154,69 @@ async function loadDevices() {
   $('#device-next').disabled = devicePage >= pages - 1;
 }
 
-async function openDevice(id) {
+async function openDevice(id, tab = 'overview') {
   selectedDeviceId = id;
   document.querySelectorAll('.page-section').forEach(e => e.classList.remove('active'));
   $('#device-detail').classList.add('active');
   await loadDeviceDetail(id);
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  const tabEl = document.querySelector(`.tab[data-tab="${tab}"]`);
+  if (tabEl) {
+    tabEl.classList.add('active');
+    $(`#tab-${tab}`).classList.add('active');
+    if (tab === 'terminal') connectTerminal();
+    if (tab === 'remote') connectRemote();
+  } else {
+    const overview = document.querySelector('.tab[data-tab="overview"]');
+    if (overview) overview.classList.add('active');
+    $('#tab-overview').classList.add('active');
+  }
 }
 
 $('#back-to-devices').addEventListener('click', () => showPage('devices'));
+
+function showConnectModal(id, hostname) {
+  connectPendingId = id;
+  $('#connect-hostname').textContent = hostname;
+  $('#connect-type').value = 'terminal';
+  $('#connect-curtain').value = '';
+  $('#connect-curtain-path').value = '';
+  $('#connect-modal').classList.remove('hidden');
+}
+
+function closeConnectModal() {
+  connectPendingId = null;
+  $('#connect-modal').classList.add('hidden');
+}
+
+async function queueCurtainFromModal() {
+  if (!connectPendingId) return;
+  const action = $('#connect-curtain').value;
+  if (!action) return;
+  let command = action;
+  if (action === 'custom') {
+    const path = $('#connect-curtain-path').value.trim();
+    if (!path) { alert('Enter the image path on the agent'); return; }
+    command = `custom:${path}`;
+  }
+  await api('POST', `/devices/${connectPendingId}/command`, { shell: 'curtain', command });
+}
+
+async function doConnect() {
+  if (!connectPendingId) return;
+  await queueCurtainFromModal();
+  const tab = $('#connect-type').value;
+  closeConnectModal();
+  openDevice(connectPendingId, tab);
+}
+
+async function doCurtainOnly() {
+  if (!connectPendingId) return;
+  await queueCurtainFromModal();
+  closeConnectModal();
+  openDevice(connectPendingId, 'curtain');
+}
 
 $('#refresh-devices').addEventListener('click', loadDevices);
 $('#device-prev').addEventListener('click', () => { devicePage--; loadDevices(); });
@@ -170,6 +226,10 @@ $('#device-search').addEventListener('input', () => {
   devicePage = 0;
   loadDevices();
 });
+
+$('#connect-go').addEventListener('click', doConnect);
+$('#connect-curtain-only').addEventListener('click', doCurtainOnly);
+$('#connect-cancel').addEventListener('click', closeConnectModal);
 
 async function loadDeviceDetail(id) {
   if (!id) return;

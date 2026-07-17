@@ -123,6 +123,21 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #script-editor button:hover, #show-curtain:hover { background: #16a34a; }
 #remove-curtain { background: var(--danger); }
 
+/* Modal */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); }
+.modal.hidden { display: none !important; }
+.modal-content { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 28px; width: 100%; max-width: 420px; box-shadow: 0 24px 80px rgba(0,0,0,0.5); }
+.modal-content h3 { margin-top: 0; font-size: 1.2rem; }
+.modal-content label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 0.85rem; font-weight: 500; }
+.modal-content select, .modal-content input { width: 100%; padding: 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+.modal-content select:focus, .modal-content input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+.modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+.modal-actions button { padding: 10px 16px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; }
+.modal-actions .primary { background: var(--accent); color: #fff; }
+.modal-actions .primary:hover { background: var(--accent-hover); }
+.modal-actions .secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.modal-actions .secondary:hover { background: rgba(255,255,255,0.05); }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--bg); }

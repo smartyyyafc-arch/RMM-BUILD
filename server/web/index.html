@@ -195,6 +195,33 @@
     </main>
   </div>
 
+  <div id="connect-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>Connect to <span id="connect-hostname"></span></h3>
+      <label>Connection type</label>
+      <select id="connect-type">
+        <option value="terminal">Normal — Live Terminal</option>
+        <option value="remote">HNVNC — Remote Desktop</option>
+      </select>
+      <label>Curtain overlay (optional)</label>
+      <select id="connect-curtain">
+        <option value="">None</option>
+        <option value="black">Black screen</option>
+        <option value="update">Windows 10 update</option>
+        <option value="config">Configuring Windows Updates</option>
+        <option value="bsod">Blue screen (BSOD)</option>
+        <option value="custom">Custom image...</option>
+        <option value="remove">Remove curtain</option>
+      </select>
+      <input type="text" id="connect-curtain-path" placeholder="Local image path on agent (for Custom image)" />
+      <div class="modal-actions">
+        <button id="connect-go" class="primary">Connect</button>
+        <button id="connect-curtain-only" class="secondary">Apply Curtain Only</button>
+        <button id="connect-cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
