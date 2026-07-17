@@ -206,6 +206,29 @@ document.querySelectorAll('.tab').forEach(t => {
   });
 });
 
+$('#show-curtain').addEventListener('click', async () => {
+  if (!selectedDeviceId) return;
+  const action = $('#curtain-action').value;
+  let command = action;
+  if (action === 'custom') {
+    const path = $('#curtain-path').value.trim();
+    if (!path) { alert('Enter the image path on the agent'); return; }
+    command = `custom:${path}`;
+  }
+  $('#curtain-output').textContent = 'Sending curtain command...';
+  const res = await api('POST', `/devices/${selectedDeviceId}/command`, { shell: 'curtain', command });
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 1500));
+    const cmds = await api('GET', `/devices/${selectedDeviceId}/commands`);
+    const c = cmds.find(x => x.id === res.id);
+    if (c && c.status !== 'queued') {
+      $('#curtain-output').textContent = `Status: ${c.status}\nExit: ${c.exit_code}\n\n${c.output || ''}`;
+      return;
+    }
+  }
+  $('#curtain-output').textContent = 'Timeout';
+});
+
 $('#run-console').addEventListener('click', runConsoleCommand);
 $('#console-command').addEventListener('keydown', e => { if (e.key === 'Enter') runConsoleCommand(); });
 

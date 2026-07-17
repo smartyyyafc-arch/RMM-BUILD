@@ -90,6 +90,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     user = db.query(User).filter(User.username == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
+    log_audit(db, user.username, "login", "web")
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
 

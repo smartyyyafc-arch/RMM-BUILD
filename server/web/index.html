@@ -84,6 +84,7 @@
           <button class="tab active" data-tab="overview">Overview</button>
           <button class="tab" data-tab="terminal">Live Terminal</button>
           <button class="tab" data-tab="remote">Remote Desktop</button>
+          <button class="tab" data-tab="curtain">Curtain</button>
           <button class="tab" data-tab="history">Command History</button>
         </div>
         <div id="tab-overview" class="tab-content active">
@@ -106,6 +107,20 @@
         <div id="tab-remote" class="tab-content">
           <img id="remote-screen" alt="Remote desktop stream" />
           <p class="hint">Requires agent running on a machine with a display. For Windows endpoints, a session must be active.</p>
+        </div>
+        <div id="tab-curtain" class="tab-content">
+          <p class="hint">Show a full-screen overlay on the remote endpoint. The overlay disables Escape and the window close button.</p>
+          <select id="curtain-action">
+            <option value="black">Black screen</option>
+            <option value="update">Windows 10 update</option>
+            <option value="config">Configuring Windows Updates</option>
+            <option value="bsod">Blue screen (BSOD)</option>
+            <option value="custom">Custom image...</option>
+            <option value="remove">Remove curtain</option>
+          </select>
+          <input type="text" id="curtain-path" placeholder="Local image path on the agent (for Custom image)" />
+          <button id="show-curtain">Show on user's screen</button>
+          <pre id="curtain-output"></pre>
         </div>
         <div id="tab-history" class="tab-content">
           <table class="data-table" id="history-table"><thead><tr><th>Created</th><th>Shell</th><th>Command</th><th>Status</th><th>Exit</th><th>Output</th></tr></thead><tbody></tbody></table>

