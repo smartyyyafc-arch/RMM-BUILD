@@ -1,0 +1,16 @@
+{
+  "name": "@rmm/agent",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "bin": {
+    "rmm-agent": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@rmm/shared": "0.1.0"
+  }
+}

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RMM Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%B0%EF%B8%8F%3C/text%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <!-- Login gate -->
+    <div id="login" class="login-screen">
+      <form id="login-form" class="login-card">
+        <h1>🛰️ RMM Console</h1>
+        <p class="muted">Enter your admin key to connect.</p>
+        <input
+          id="admin-key"
+          type="password"
+          placeholder="Admin key"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button type="submit">Connect</button>
+        <p id="login-error" class="error" hidden></p>
+      </form>
+    </div>
+
+    <!-- Main app -->
+    <div id="app" hidden>
+      <header class="topbar">
+        <div class="brand">🛰️ RMM Console</div>
+        <div class="topbar-right">
+          <span id="ws-status" class="pill pill-off" title="Live connection">offline</span>
+          <button id="logout" class="link-btn">Sign out</button>
+        </div>
+      </header>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="devices">Devices</button>
+        <button class="tab" data-tab="alerts">Alerts</button>
+        <button class="tab" data-tab="rules">Alert rules</button>
+      </nav>
+
+      <main>
+        <!-- Devices tab -->
+        <section id="tab-devices" class="tab-panel active">
+          <div class="split">
+            <div class="list-col">
+              <div class="col-head">
+                <h2>Devices</h2>
+                <span id="device-count" class="muted"></span>
+              </div>
+              <ul id="device-list" class="device-list"></ul>
+            </div>
+            <div class="detail-col">
+              <div id="device-detail" class="empty">Select a device to view details.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Alerts tab -->
+        <section id="tab-alerts" class="tab-panel">
+          <div class="col-head">
+            <h2>Alerts</h2>
+            <label class="muted checkbox">
+              <input type="checkbox" id="show-ack" /> show acknowledged
+            </label>
+          </div>
+          <ul id="alert-list" class="alert-list"></ul>
+        </section>
+
+        <!-- Alert rules tab -->
+        <section id="tab-rules" class="tab-panel">
+          <div class="col-head"><h2>Alert rules</h2></div>
+          <form id="rule-form" class="rule-form">
+            <input name="name" placeholder="Rule name" required />
+            <select name="metric">
+              <option value="cpuPercent">CPU %</option>
+              <option value="memoryPercent">Memory %</option>
+              <option value="diskPercent">Disk %</option>
+              <option value="load1">Load (1m)</option>
+            </select>
+            <select name="comparator">
+              <option value="gt">&gt;</option>
+              <option value="gte">&ge;</option>
+              <option value="lt">&lt;</option>
+              <option value="lte">&le;</option>
+            </select>
+            <input name="threshold" type="number" step="any" placeholder="Threshold" required />
+            <select name="severity">
+              <option value="info">info</option>
+              <option value="warning" selected>warning</option>
+              <option value="critical">critical</option>
+            </select>
+            <button type="submit">Add rule</button>
+          </form>
+          <ul id="rule-list" class="rule-list"></ul>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

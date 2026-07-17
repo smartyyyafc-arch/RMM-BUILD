@@ -1,0 +1,24 @@
+# systemd unit for running the RMM agent on a managed endpoint (Linux).
+#
+# Install on each endpoint:
+#   sudo mkdir -p /opt/rmm-agent && sudo cp -r packages/agent/dist /opt/rmm-agent/
+#   sudo cp -r node_modules /opt/rmm-agent/   # or install @rmm/agent standalone
+#   sudo cp deploy/rmm-agent.service /etc/systemd/system/
+#   sudo cp deploy/agent.env.example /etc/rmm/agent.env   # then edit
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rmm-agent
+
+[Unit]
+Description=RMM Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/rmm/agent.env
+WorkingDirectory=/opt/rmm-agent
+ExecStart=/usr/bin/node /opt/rmm-agent/dist/index.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,43 @@
+# RMM stack for a VPS: the app server behind an nginx reverse proxy that
+# terminates TLS for your domain.
+#
+# Quick start:
+#   1. cp .env.example .env  and set RMM_ADMIN_KEY + RMM_ENROLLMENT_TOKEN
+#   2. Set RMM_DOMAIN below (or in .env) to your domain, e.g. rmm.example.com
+#   3. Obtain TLS certs (see DEPLOY.md) then: docker compose up -d
+
+services:
+  rmm-server:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      RMM_DB_PATH: /app/data/rmm.db
+      RMM_ADMIN_KEY: ${RMM_ADMIN_KEY:?set RMM_ADMIN_KEY in .env}
+      RMM_ENROLLMENT_TOKEN: ${RMM_ENROLLMENT_TOKEN:?set RMM_ENROLLMENT_TOKEN in .env}
+      RMM_OFFLINE_AFTER_SECONDS: ${RMM_OFFLINE_AFTER_SECONDS:-120}
+    volumes:
+      - rmm-data:/app/data
+    # Not published to the host directly — nginx reaches it over the internal
+    # network. Uncomment to expose the app without a proxy (development only).
+    # ports:
+    #   - "8080:8080"
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - rmm-server
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      RMM_DOMAIN: ${RMM_DOMAIN:?set RMM_DOMAIN in .env, e.g. rmm.example.com}
+    volumes:
+      - ./deploy/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+      - certbot-webroot:/var/www/certbot:ro
+
+volumes:
+  rmm-data:
+  certbot-webroot:

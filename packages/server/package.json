@@ -1,0 +1,15 @@
+{
+  "name": "@rmm/server",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node --experimental-sqlite dist/index.js"
+  },
+  "dependencies": {
+    "@rmm/shared": "0.1.0",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

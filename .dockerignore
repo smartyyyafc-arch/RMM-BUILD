@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+data
+*.db
+*.db-*
+agent-state.json
+.git
+.env
+.env.local
+*.log

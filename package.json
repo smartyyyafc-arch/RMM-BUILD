@@ -1,0 +1,29 @@
+{
+  "name": "rmm-build",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A lightweight, self-hostable Remote Monitoring & Management (RMM) platform: server, endpoint agent, and web dashboard.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/agent"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "server": "node --experimental-sqlite packages/server/dist/index.js",
+    "agent": "node packages/agent/dist/index.js",
+    "dev:server": "npm run build && npm run server",
+    "test": "node --experimental-sqlite --test packages/server/dist/**/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}

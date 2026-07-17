@@ -1,0 +1,32 @@
+# systemd unit for running the RMM server without Docker.
+#
+# Install:
+#   sudo cp deploy/rmm-server.service /etc/systemd/system/
+#   sudo mkdir -p /etc/rmm && sudo cp .env.example /etc/rmm/server.env  # then edit
+#   sudo useradd --system --home /opt/rmm --shell /usr/sbin/nologin rmm  # if missing
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rmm-server
+
+[Unit]
+Description=RMM Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rmm
+Group=rmm
+WorkingDirectory=/opt/rmm
+EnvironmentFile=/etc/rmm/server.env
+ExecStart=/usr/bin/node --experimental-sqlite packages/server/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/rmm/data
+
+[Install]
+WantedBy=multi-user.target
