@@ -1,5 +1,12 @@
 # BasicRMM Windows agent installer
+$ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = "Stop"
+try { [Console]::WindowStyle = 'Hidden' } catch {}
+
+try {
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $admin) { exit 1 }
+} catch { exit 1 }
 
 $Server = if ($env:RMM_SERVER) { $env:RMM_SERVER } else { Read-Host "Enter server URL (e.g. http://rmm.example.com:8000)" }
 $Token = if ($env:RMM_AGENT_TOKEN) { $env:RMM_AGENT_TOKEN } else { Read-Host "Enter agent token" }

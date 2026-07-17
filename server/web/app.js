@@ -44,6 +44,9 @@ function showPage(id) {
   if (id === 'software') loadSoftware();
   if (id === 'patches') loadPatches();
   if (id === 'toolbox') loadToolbox();
+  if (id === 'alerts') loadAlerts();
+  if (id === 'reports') loadReports();
+  if (id === 'settings') loadSettings();
 }
 
 $('#login-form').addEventListener('submit', async e => {
@@ -87,6 +90,9 @@ function startPolling() {
     if (currentPage === 'device-detail') loadDeviceDetail(selectedDeviceId);
     if (currentPage === 'software') loadSoftware();
     if (currentPage === 'patches') loadPatches();
+    if (currentPage === 'alerts') loadAlerts();
+    if (currentPage === 'reports') loadReports();
+    if (currentPage === 'users') loadUsers();
   }, 5000);
 }
 
@@ -105,11 +111,11 @@ async function loadDashboard() {
   const host = window.location.host;
   const server = `http://${host}`;
   const token = 'agent-secret-change-me';
-  const psOneLiner = `powershell -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile install.ps1; .\\install.ps1"`;
+  const psOneLiner = `powershell -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile $env:TEMP\\rmm-install.ps1 -UseBasicParsing; & $env:TEMP\\rmm-install.ps1"`;
   $('#agent-install-ps').textContent = psOneLiner;
-  $('#agent-install-setup').textContent = `powershell -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile $env:TEMP\\rmm-setup.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\\rmm-setup.ps1"`;
-  $('#agent-install-msi').textContent = `msiexec /i ${server}/agent/BasicRMM-Agent.msi RMM_SERVER=${server} RMM_AGENT_TOKEN=${token} /qn`;
-  $('#agent-install-gpo').textContent = `powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile '\\${host}\\netlogon\\rmm-agent.ps1'; powershell -ExecutionPolicy Bypass -File '\\${host}\\netlogon\\rmm-agent.ps1'"`;
+  $('#agent-install-setup').textContent = psOneLiner;
+  $('#agent-install-msi').textContent = `msiexec /i ${server}/agent/BasicRMM-Agent.msi RMM_SERVER=${server} RMM_AGENT_TOKEN=${token} /qn /norestart`;
+  $('#agent-install-gpo').textContent = `powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile '\\${host}\\netlogon\\rmm-agent.ps1' -UseBasicParsing; & '\\${host}\\netlogon\\rmm-agent.ps1'"`;
 }
 
 function renderPie(id, label, labels, data, colors) {
@@ -398,12 +404,28 @@ function connectRemote() {
 
 async function loadScripts() {
   const scripts = await api('GET', '/scripts');
+  const devices = (await api('GET', '/devices?limit=1000')).items || [];
   const tbody = $('#scripts-table tbody');
   tbody.innerHTML = '';
   scripts.forEach(s => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${s.name}</td><td>${s.language}</td><td>${s.description || ''}</td>`;
+    const devOpts = devices.map(d => `<option value="${d.id}">${d.hostname}</option>`).join('');
+    tr.innerHTML = `<td>${s.name}</td><td>${s.language}</td><td>${s.description || ''}</td>
+      <td>
+        <select class="run-script-device" data-script="${s.id}"><option value="">Select device</option>${devOpts}</select>
+        <button class="run-script-btn" data-script="${s.id}">Run</button>
+      </td>`;
     tbody.appendChild(tr);
+  });
+  document.querySelectorAll('.run-script-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const scriptId = btn.dataset.script;
+      const deviceId = document.querySelector(`.run-script-device[data-script="${scriptId}"]`).value;
+      if (!deviceId) { alert('Select a device'); return; }
+      const res = await api('POST', `/devices/${deviceId}/run-script/${scriptId}`);
+      btn.textContent = `Queued #${res.id}`;
+      setTimeout(() => btn.textContent = 'Run', 2000);
+    });
   });
 }
 
@@ -456,7 +478,58 @@ async function loadAudit() {
 }
 
 async function loadUsers() {
-  // Not exposed; placeholder
+  const users = await api('GET', '/auth/users');
+  const tbody = $('#users-table tbody');
+  tbody.innerHTML = '';
+  users.forEach(u => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${u.username}</td><td>${u.email || ''}</td><td>${u.is_admin ? 'Yes' : 'No'}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadAlerts() {
+  const filter = $('#alert-filter').value;
+  const alerts = await api('GET', `/alerts?dismissed=${filter}`);
+  const tbody = $('#alerts-table tbody');
+  tbody.innerHTML = '';
+  alerts.forEach(a => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${formatDate(a.created_at)}</td><td>${a.device_hostname}</td><td class="severity-${a.severity}">${a.severity}</td><td>${a.category}</td><td>${a.message}</td><td>${a.dismissed ? 'Dismissed' : `<button class="dismiss-alert" data-id="${a.id}">Dismiss</button>`}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.querySelectorAll('.dismiss-alert').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api('POST', `/alerts/${btn.dataset.id}/dismiss`);
+      loadAlerts();
+    });
+  });
+}
+
+async function loadReports() {
+  const r = await api('GET', '/reports/summary');
+  $('#report-summary').innerHTML = `
+    <div class="stat"><h3>${r.total_devices}</h3><p>Total Devices</p></div>
+    <div class="stat"><h3>${r.online}</h3><p>Online</p></div>
+    <div class="stat"><h3>${r.offline}</h3><p>Offline</p></div>
+    <div class="stat"><h3>${r.needs_attention}</h3><p>Needs Attention</p></div>
+    <div class="stat"><h3>${r.open_alerts}</h3><p>Open Alerts</p></div>`;
+  const tbody = $('#report-audit-table tbody');
+  tbody.innerHTML = '';
+  (r.recent_audit || []).forEach(a => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${formatDate(a.time)}</td><td>${a.user}</td><td>${a.action}</td><td>${a.detail}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadSettings() {
+  const s = await api('GET', '/settings');
+  $('#setting-cpu').value = s.threshold_cpu;
+  $('#setting-memory').value = s.threshold_memory;
+  $('#setting-disk').value = s.threshold_disk;
+  $('#setting-agent-token').textContent = s.agent_token;
+  $('#setting-server-url').textContent = s.server_url || window.location.origin;
 }
 
 async function populateDeviceSelects() {
@@ -560,6 +633,19 @@ $('#add-user').addEventListener('click', async () => {
   if (!username || !password) return;
   await api('POST', '/auth/users', { username, password, is_admin });
   loadUsers();
+});
+
+$('#alert-filter').addEventListener('change', loadAlerts);
+$('#refresh-alerts').addEventListener('click', loadAlerts);
+$('#refresh-reports').addEventListener('click', loadReports);
+
+$('#save-settings').addEventListener('click', async () => {
+  await api('PUT', '/settings', {
+    threshold_cpu: $('#setting-cpu').value,
+    threshold_memory: $('#setting-memory').value,
+    threshold_disk: $('#setting-disk').value
+  });
+  alert('Settings saved');
 });
 
 document.querySelectorAll('.install-tab').forEach(t => {

@@ -153,7 +153,17 @@
         </div>
       </section>
 
-      <section id="alerts" class="page-section"><p>Alerts page is a placeholder for check-based alerting rules. Build out thresholds under Settings.</p></section>
+      <section id="alerts" class="page-section">
+        <div class="toolbar">
+          <select id="alert-filter">
+            <option value="0">Open alerts</option>
+            <option value="1">Dismissed</option>
+            <option value="">All</option>
+          </select>
+          <button id="refresh-alerts">Refresh</button>
+        </div>
+        <table class="data-table" id="alerts-table"><thead><tr><th>Time</th><th>Device</th><th>Severity</th><th>Category</th><th>Message</th><th>Action</th></tr></thead><tbody></tbody></table>
+      </section>
       <section id="software" class="page-section">
         <div class="toolbar">
           <select id="software-device"><option value="">All devices</option></select>
@@ -203,7 +213,12 @@
         </div>
         <pre id="toolbox-output">Select a device and tool, then click Run.</pre>
       </section>
-      <section id="reports" class="page-section"><p>Reports can be generated from audit logs, device metrics, and automation run history.</p></section>
+      <section id="reports" class="page-section">
+        <div class="toolbar"><button id="refresh-reports">Refresh Report</button></div>
+        <div id="report-summary" class="stats"></div>
+        <h4>Recent Activity</h4>
+        <table class="data-table" id="report-audit-table"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody></tbody></table>
+      </section>
       <section id="audit" class="page-section">
         <table class="data-table" id="audit-table"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody></tbody></table>
       </section>
@@ -211,7 +226,20 @@
         <div class="toolbar"><button id="add-user">Add user</button></div>
         <table class="data-table" id="users-table"><thead><tr><th>Username</th><th>Email</th><th>Admin</th></tr></thead><tbody></tbody></table>
       </section>
-      <section id="settings" class="page-section"><p>Settings placeholder. Key environment variables: AGENT_TOKEN, SECRET_KEY, DATABASE_URL.</p></section>
+      <section id="settings" class="page-section">
+        <h4>Thresholds</h4>
+        <p>Devices exceeding these CPU, Memory, or Disk percentages will trigger an alert.</p>
+        <div class="form-row">
+          <label>CPU % <input type="number" id="setting-cpu" value="90" /></label>
+          <label>Memory % <input type="number" id="setting-memory" value="90" /></label>
+          <label>Disk % <input type="number" id="setting-disk" value="90" /></label>
+        </div>
+        <button id="save-settings">Save Settings</button>
+        <h4>Current Configuration</h4>
+        <p>Agent Token: <code id="setting-agent-token"></code></p>
+        <p>Server URL: <code id="setting-server-url"></code></p>
+      </section>
+
     </main>
   </div>
 

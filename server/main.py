@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from contextlib import asynccontextmanager
 
+from croniter import croniter
+
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -15,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import init_db, get_db, SessionLocal
-from models import User, Device, Command, AuditLog, Script, Automation, Software, Patch
+from models import User, Device, Command, AuditLog, Script, Automation, Software, Patch, Alert, Setting
 from auth import (
     get_current_user, create_access_token, verify_password, get_password_hash,
     require_admin, ensure_admin, decode_token
@@ -35,6 +37,58 @@ def log_audit(db: Session, username: str, action: str, detail: str = ""):
     db.commit()
 
 
+DEFAULT_THRESHOLDS = {"cpu": 90.0, "memory": 90.0, "disk": 90.0}
+
+
+def get_thresholds(db: Session):
+    try:
+        cpu = float(db.query(Setting).filter(Setting.key == "threshold_cpu").first().value or DEFAULT_THRESHOLDS["cpu"])
+        mem = float(db.query(Setting).filter(Setting.key == "threshold_memory").first().value or DEFAULT_THRESHOLDS["memory"])
+        disk = float(db.query(Setting).filter(Setting.key == "threshold_disk").first().value or DEFAULT_THRESHOLDS["disk"])
+        return {"cpu": cpu, "memory": mem, "disk": disk}
+    except Exception:
+        return DEFAULT_THRESHOLDS
+
+
+def upsert_alert(db: Session, device: Device, severity: str, category: str, message: str):
+    existing = db.query(Alert).filter(
+        Alert.device_id == device.id,
+        Alert.category == category,
+        Alert.dismissed == False
+    ).first()
+    if existing:
+        existing.message = message
+        existing.severity = severity
+        existing.created_at = datetime.now(timezone.utc)
+        return
+    db.add(Alert(
+        device_id=device.id,
+        device_hostname=device.hostname or device.agent_id,
+        severity=severity,
+        category=category,
+        message=message
+    ))
+
+
+def clear_alert(db: Session, device_id: int, category: str):
+    for a in db.query(Alert).filter(Alert.device_id == device_id, Alert.category == category, Alert.dismissed == False).all():
+        a.dismissed = True
+
+
+def check_device_alerts(db: Session, device: Device):
+    thresholds = get_thresholds(db)
+    if device.status == "offline":
+        upsert_alert(db, device, "critical", "offline", f"{device.hostname} is offline")
+    else:
+        clear_alert(db, device.id, "offline")
+    for metric, threshold in thresholds.items():
+        value = getattr(device, f"{metric}_percent", 0.0) or 0.0
+        if value > threshold:
+            upsert_alert(db, device, "warning" if value < 95 else "critical", metric, f"{device.hostname} {metric} usage is {value:.1f}%")
+        else:
+            clear_alert(db, device.id, metric)
+
+
 async def mark_offline():
     while True:
         await asyncio.sleep(30)
@@ -44,6 +98,42 @@ async def mark_offline():
             for d in db.query(Device).filter(Device.status == "online").all():
                 if d.last_seen and d.last_seen.timestamp() < now - HEARTBEAT_TIMEOUT_SECONDS:
                     d.status = "offline"
+                    check_device_alerts(db, d)
+            db.commit()
+        finally:
+            db.close()
+
+
+automation_last_run: dict[int, datetime] = {}
+
+
+async def run_automations():
+    while True:
+        await asyncio.sleep(60)
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            automations = db.query(Automation).filter(Automation.enabled == True).all()
+            for a in automations:
+                try:
+                    if not croniter.is_valid(a.schedule):
+                        continue
+                    prev = croniter(a.schedule, now).get_prev(datetime)
+                    last = automation_last_run.get(a.id)
+                    if last and last >= prev:
+                        continue
+                    if (now - prev).total_seconds() > 90:
+                        continue
+                    script = db.query(Script).filter(Script.id == a.script_id).first()
+                    if not script:
+                        continue
+                    devices = db.query(Device).filter(Device.group == a.target_group).all() if a.target_group else db.query(Device).all()
+                    for d in devices:
+                        db.add(Command(device_id=d.id, shell=script.language, command=script.code))
+                    log_audit(db, "system", "automation_run", f"automation={a.name} targets={len(devices)}")
+                    automation_last_run[a.id] = prev
+                except Exception:
+                    continue
             db.commit()
         finally:
             db.close()
@@ -58,6 +148,7 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     asyncio.create_task(mark_offline())
+    asyncio.create_task(run_automations())
     yield
 
 
@@ -174,6 +265,7 @@ def heartbeat(payload: HeartbeatPayload, req: Request, db: Session = Depends(get
         device.tags = payload.tags or device.tags
     device.status = "online"
     device.last_seen = datetime.now(timezone.utc)
+    check_device_alerts(db, device)
     db.commit()
     db.refresh(device)
 
@@ -442,6 +534,110 @@ def list_audit(db: Session = Depends(get_db), current: User = Depends(get_curren
         "detail": a.detail,
         "created_at": a.created_at.isoformat() if a.created_at else None
     } for a in db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(200).all()]
+
+
+# ---- Users ----
+
+@app.get("/api/auth/users")
+def list_users(db: Session = Depends(get_db), current: User = Depends(require_admin)):
+    return [{"id": u.id, "username": u.username, "email": u.email, "is_admin": u.is_admin} for u in db.query(User).order_by(User.username).all()]
+
+
+# ---- Alerts ----
+
+@app.get("/api/alerts")
+def list_alerts(dismissed: Optional[str] = None, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    q = db.query(Alert)
+    if dismissed == "0":
+        q = q.filter(Alert.dismissed == False)
+    elif dismissed == "1":
+        q = q.filter(Alert.dismissed == True)
+    return [{
+        "id": a.id,
+        "device_id": a.device_id,
+        "device_hostname": a.device_hostname,
+        "severity": a.severity,
+        "category": a.category,
+        "message": a.message,
+        "dismissed": a.dismissed,
+        "created_at": a.created_at.isoformat() if a.created_at else None
+    } for a in q.order_by(Alert.created_at.desc()).limit(200).all()]
+
+
+@app.post("/api/alerts/{alert_id}/dismiss")
+def dismiss_alert(alert_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    a = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    a.dismissed = True
+    db.commit()
+    return {"ok": True}
+
+
+# ---- Settings ----
+
+@app.get("/api/settings")
+def get_settings(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    rows = db.query(Setting).all()
+    settings = {s.key: s.value for s in rows}
+    return {
+        "agent_token": AGENT_TOKEN,
+        "threshold_cpu": settings.get("threshold_cpu", "90"),
+        "threshold_memory": settings.get("threshold_memory", "90"),
+        "threshold_disk": settings.get("threshold_disk", "90"),
+        "server_url": settings.get("server_url", "")
+    }
+
+
+class SettingsPayload(BaseModel):
+    threshold_cpu: Optional[str] = None
+    threshold_memory: Optional[str] = None
+    threshold_disk: Optional[str] = None
+    server_url: Optional[str] = None
+
+
+@app.put("/api/settings")
+def update_settings(payload: SettingsPayload, db: Session = Depends(get_db), current: User = Depends(require_admin)):
+    for key, value in payload.dict(exclude_unset=True).items():
+        if value is None:
+            continue
+        s = db.query(Setting).filter(Setting.key == key).first()
+        if s:
+            s.value = str(value)
+        else:
+            db.add(Setting(key=key, value=str(value)))
+    db.commit()
+    return {"ok": True}
+
+
+# ---- Reports ----
+
+@app.get("/api/reports/summary")
+def report_summary(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    total = db.query(Device).count()
+    online = db.query(Device).filter(Device.status == "online").count()
+    offline = total - online
+    needs_attention = db.query(Device).filter(
+        (Device.cpu_percent > 90) | (Device.memory_percent > 90) | (Device.disk_percent > 90)
+    ).count()
+    alerts = db.query(Alert).filter(Alert.dismissed == False).count()
+    by_platform = {}
+    for d in db.query(Device).all():
+        p = d.platform or "unknown"
+        by_platform[p] = by_platform.get(p, {"total": 0, "online": 0})
+        by_platform[p]["total"] += 1
+        if d.status == "online":
+            by_platform[p]["online"] += 1
+    recent_audit = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(10).all()
+    return {
+        "total_devices": total,
+        "online": online,
+        "offline": offline,
+        "needs_attention": needs_attention,
+        "open_alerts": alerts,
+        "by_platform": by_platform,
+        "recent_audit": [{"time": a.created_at.isoformat() if a.created_at else None, "user": a.username, "action": a.action, "detail": a.detail} for a in recent_audit]
+    }
 
 
 # ---- Agent WebSocket ----

@@ -89,3 +89,20 @@ class Patch(Base):
     installed_on = Column(String)
     installed_by = Column(String)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Alert(Base):
+    __tablename__ = "alerts"
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True)
+    device_hostname = Column(String)
+    severity = Column(String)  # critical, warning, info
+    category = Column(String)  # cpu, memory, disk, offline, online
+    message = Column(Text)
+    dismissed = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Setting(Base):
+    __tablename__ = "settings"
+    key = Column(String, primary_key=True, index=True)
+    value = Column(Text)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
