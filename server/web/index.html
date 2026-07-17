@@ -66,6 +66,7 @@
 
       <section id="devices" class="page-section">
         <div class="toolbar">
+          <input type="text" id="device-search" placeholder="Search hostname..." />
           <button id="refresh-devices">Refresh</button>
           <button id="add-device">Add device</button>
         </div>
@@ -75,6 +76,11 @@
           </thead>
           <tbody></tbody>
         </table>
+        <div class="pagination">
+          <button id="device-prev" disabled>&larr; Prev</button>
+          <span id="device-page-info">Page 1</span>
+          <button id="device-next">Next &rarr;</button>
+        </div>
       </section>
 
       <section id="device-detail" class="page-section">

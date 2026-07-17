@@ -234,14 +234,17 @@ def inventory(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.get("/api/devices")
-def list_devices(status: Optional[str] = None, group: Optional[str] = None, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def list_devices(status: Optional[str] = None, group: Optional[str] = None, q: Optional[str] = None, skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     query = db.query(Device)
     if status:
         query = query.filter(Device.status == status)
     if group:
         query = query.filter(Device.group == group)
-    devices = query.order_by(Device.hostname).all()
-    return [{
+    if q:
+        query = query.filter(Device.hostname.ilike(f"%{q}%"))
+    total = query.count()
+    devices = query.order_by(Device.hostname).offset(skip).limit(limit).all()
+    items = [{
         "id": d.id,
         "hostname": d.hostname,
         "agent_id": d.agent_id,
@@ -258,6 +261,7 @@ def list_devices(status: Optional[str] = None, group: Optional[str] = None, db: 
         "ip": d.ip,
         "user": d.user
     } for d in devices]
+    return {"total": total, "skip": skip, "limit": limit, "items": items}
 
 
 @app.get("/api/devices/{device_id}")

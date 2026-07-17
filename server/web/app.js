@@ -7,6 +7,9 @@ let terminalWsMode = null;
 let dashboardInterval = null;
 let currentDevice = null;
 let charts = {};
+let devicePage = 0;
+let deviceLimit = 25;
+let deviceSearch = '';
 
 function $(sel) { return document.querySelector(sel); }
 
@@ -131,7 +134,11 @@ function renderBar(id, label, labels, total, online) {
 }
 
 async function loadDevices() {
-  const devices = await api('GET', '/devices');
+  const params = new URLSearchParams({ skip: devicePage * deviceLimit, limit: deviceLimit });
+  if (deviceSearch) params.set('q', deviceSearch);
+  const res = await api('GET', `/devices?${params.toString()}`);
+  const devices = res.items || [];
+  const total = res.total || 0;
   const tbody = $('#devices-table tbody');
   tbody.innerHTML = '';
   devices.forEach(d => {
@@ -140,6 +147,10 @@ async function loadDevices() {
     tr.querySelector('button').addEventListener('click', () => openDevice(d.id));
     tbody.appendChild(tr);
   });
+  const pages = Math.ceil(total / deviceLimit) || 1;
+  $('#device-page-info').textContent = `Page ${devicePage + 1} of ${pages} (${total} devices)`;
+  $('#device-prev').disabled = devicePage === 0;
+  $('#device-next').disabled = devicePage >= pages - 1;
 }
 
 async function openDevice(id) {
@@ -150,6 +161,15 @@ async function openDevice(id) {
 }
 
 $('#back-to-devices').addEventListener('click', () => showPage('devices'));
+
+$('#refresh-devices').addEventListener('click', loadDevices);
+$('#device-prev').addEventListener('click', () => { devicePage--; loadDevices(); });
+$('#device-next').addEventListener('click', () => { devicePage++; loadDevices(); });
+$('#device-search').addEventListener('input', () => {
+  deviceSearch = $('#device-search').value.trim();
+  devicePage = 0;
+  loadDevices();
+});
 
 async function loadDeviceDetail(id) {
   if (!id) return;
@@ -372,7 +392,8 @@ async function loadUsers() {
 }
 
 async function populateDeviceSelects() {
-  const devices = await api('GET', '/devices');
+  const res = await api('GET', '/devices?limit=1000');
+  const devices = res.items || [];
   ['software-device', 'patches-device', 'toolbox-device'].forEach(id => {
     const sel = $('#' + id);
     if (!sel) return;
