@@ -3,6 +3,7 @@ let token = localStorage.getItem('rmm_token') || '';
 let currentPage = 'dashboard';
 let selectedDeviceId = null;
 let terminalWs = null;
+let terminalWsMode = null;
 let dashboardInterval = null;
 let currentDevice = null;
 let charts = {};
@@ -256,11 +257,22 @@ async function pollCommand(id) {
   $('#console-output').textContent = 'Timeout waiting for command result.';
 }
 
+function closeWs(reason='terminal') {
+  if (!terminalWs) return;
+  if (terminalWsMode === 'remote') {
+    try { terminalWs.send(JSON.stringify({ type: 'remote_stop' })); } catch (e) {}
+  }
+  terminalWs.close();
+  terminalWs = null;
+  terminalWsMode = null;
+}
+
 function connectTerminal() {
   if (!selectedDeviceId) return;
-  if (terminalWs) { terminalWs.close(); terminalWs = null; }
+  closeWs('terminal');
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   terminalWs = new WebSocket(`${protocol}://${window.location.host}/ws/terminal/${selectedDeviceId}?token=${token}`);
+  terminalWsMode = 'terminal';
   const term = $('#terminal');
   terminalWs.onopen = () => { term.textContent += 'Terminal connected.\n'; };
   terminalWs.onmessage = ev => {
@@ -283,9 +295,10 @@ $('#terminal-input').addEventListener('keydown', e => {
 
 function connectRemote() {
   if (!selectedDeviceId) return;
-  if (terminalWs) { terminalWs.close(); terminalWs = null; }
+  closeWs('terminal');
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   terminalWs = new WebSocket(`${protocol}://${window.location.host}/ws/terminal/${selectedDeviceId}?token=${token}`);
+  terminalWsMode = 'remote';
   const img = $('#remote-screen');
   img.style.display = 'block';
   terminalWs.onopen = () => terminalWs.send(JSON.stringify({ type: 'remote_start' }));

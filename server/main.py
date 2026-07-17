@@ -27,6 +27,7 @@ HEARTBEAT_TIMEOUT_SECONDS = 120
 
 connected_agents: dict[str, WebSocket] = {}
 terminal_sessions: dict[str, WebSocket] = {}
+device_operators: dict[int, list[WebSocket]] = {}
 
 
 def log_audit(db: Session, username: str, action: str, detail: str = ""):
@@ -452,7 +453,18 @@ async def agent_websocket(websocket: WebSocket, agent_id: str, token: str = ""):
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
+            mtype = msg.get("type")
             session_id = msg.get("session_id")
+            # Remote desktop frames are broadcast to all operators watching this device.
+            if mtype == "frame" and msg.get("device_id"):
+                device_id = msg.get("device_id")
+                for op_ws in device_operators.get(device_id, [])[:]:
+                    try:
+                        await op_ws.send_text(data)
+                    except Exception:
+                        pass
+                continue
+            # Terminal output/errors are routed to the specific operator session.
             if session_id and session_id in terminal_sessions:
                 await terminal_sessions[session_id].send_text(data)
     except WebSocketDisconnect:
@@ -471,11 +483,13 @@ async def operator_terminal(websocket: WebSocket, device_id: int, token: str = "
     await websocket.accept()
     session_id = str(uuid.uuid4())
     terminal_sessions[session_id] = websocket
+    device_operators.setdefault(device_id, []).append(websocket)
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
             msg["session_id"] = session_id
+            msg["device_id"] = device_id
             db = SessionLocal()
             try:
                 device = db.query(Device).filter(Device.id == device_id).first()
@@ -490,6 +504,9 @@ async def operator_terminal(websocket: WebSocket, device_id: int, token: str = "
         pass
     finally:
         terminal_sessions.pop(session_id, None)
+        ops = device_operators.get(device_id, [])
+        if websocket in ops:
+            ops.remove(websocket)
 
 
 # ---- Static frontend ----

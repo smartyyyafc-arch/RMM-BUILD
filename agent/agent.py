@@ -45,6 +45,9 @@ class Agent:
         self.shell = None
         self.current_session_id = None
         self.remote_active = False
+        self.remote_thread = None
+        self.remote_lock = threading.Lock()
+        self.remote_device_id = None
         self.curtain_proc = None
 
     def _get_user(self):
@@ -301,8 +304,9 @@ root.mainloop()
             elif mtype == "run":
                 threading.Thread(target=self.run_command, args=(0, msg.get("shell", "powershell"), msg["command"]), daemon=True).start()
             elif mtype == "remote_start":
-                self.remote_active = True
-                threading.Thread(target=self.remote_stream, args=(session_id,), daemon=True).start()
+                self.start_remote_stream(session_id, msg.get("device_id"))
+            elif mtype == "remote_stop":
+                self.stop_remote_stream()
             elif mtype == "remote_input":
                 self.handle_remote_input(msg)
         except Exception as e:
@@ -314,6 +318,31 @@ root.mainloop()
                 self.ws.send(json.dumps(msg))
             except Exception:
                 pass
+
+    def on_ws_open(self, ws):
+        print("Agent websocket connected")
+
+    def on_ws_close(self, ws, close_status_code, close_msg):
+        print("Agent websocket disconnected")
+        self.stop_remote_stream()
+
+    def start_remote_stream(self, session_id, device_id=None):
+        with self.remote_lock:
+            self.remote_device_id = device_id
+            if self.remote_thread and self.remote_thread.is_alive():
+                return
+            self.remote_active = True
+            self.remote_thread = threading.Thread(target=self.remote_stream, args=(session_id,), daemon=True)
+            self.remote_thread.start()
+
+    def stop_remote_stream(self):
+        with self.remote_lock:
+            self.remote_active = False
+            self.remote_device_id = None
+            thread = self.remote_thread
+            self.remote_thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=2)
 
     def shell_reader(self, pipe, session_id, stream_name):
         try:
@@ -356,7 +385,10 @@ root.mainloop()
                 buf = io.BytesIO()
                 pil.save(buf, format="JPEG", quality=50)
                 b64 = base64.b64encode(buf.getvalue()).decode()
-                self.send_ws({"type": "frame", "data": "data:image/jpeg;base64," + b64, "session_id": session_id})
+                payload = {"type": "frame", "data": "data:image/jpeg;base64," + b64, "session_id": session_id}
+                if self.remote_device_id:
+                    payload["device_id"] = self.remote_device_id
+                self.send_ws(payload)
                 time.sleep(0.2)
             except Exception as e:
                 print("Remote stream error:", e)
@@ -381,29 +413,18 @@ root.mainloop()
         url = f"{proto}://{host}/ws/agent/{self.agent_id}?token={self.token}"
         while True:
             try:
-                self.ws = websocket.create_connection(url, timeout=10)
-                print("Agent websocket connected")
-                while True:
-                    try:
-                        message = self.ws.recv()
-                        if message is None:
-                            break
-                        self.on_ws_message(self.ws, message)
-                    except websocket.WebSocketTimeoutException:
-                        continue
-                    except Exception as e:
-                        print("WS recv error:", e)
-                        break
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=self.on_ws_open,
+                    on_message=self.on_ws_message,
+                    on_close=self.on_ws_close,
+                )
+                # run_forever keeps the connection alive with ping/pong frames every 20s
+                self.ws.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
                 print("WS connect error:", e)
             finally:
-                if self.ws:
-                    try:
-                        self.ws.close()
-                    except Exception:
-                        pass
                 self.ws = None
-                print("Agent websocket disconnected")
             time.sleep(5)
 
     def inventory_loop(self):
