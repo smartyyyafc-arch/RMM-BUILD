@@ -1,0 +1,18 @@
+services:
+  rmm-server:
+    build: ./server
+    container_name: rmm-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - rmm-data:/app/data
+      - ./agent:/app/agent:ro
+    environment:
+      - DATABASE_URL=sqlite:////app/data/rmm.db
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - AGENT_TOKEN=${AGENT_TOKEN:-agent-secret-change-me}
+      - AGENT_FILES_DIR=/app/agent
+    restart: unless-stopped
+
+volumes:
+  rmm-data:

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BasicRMM Operator Console</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div id="login" class="page">
+    <div class="login-box">
+      <h1>BasicRMM Operator Console</h1>
+      <form id="login-form">
+        <input type="text" id="username" placeholder="Username" value="admin" required>
+        <input type="password" id="password" placeholder="Password" value="admin" required>
+        <button type="submit">Log in</button>
+      </form>
+      <p id="login-error" class="error"></p>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <aside class="sidebar">
+      <div class="brand">BasicRMM</div>
+      <nav>
+        <a data-page="dashboard" class="active" href="#">Dashboard</a>
+        <a data-page="devices" href="#">Devices</a>
+        <a data-page="alerts" href="#">Alerts</a>
+        <a data-page="software" href="#">Software</a>
+        <a data-page="patches" href="#">Patches</a>
+        <a data-page="scripts" href="#">Scripts</a>
+        <a data-page="automations" href="#">Automations</a>
+        <a data-page="toolbox" href="#">Toolbox</a>
+        <a data-page="reports" href="#">Reports</a>
+        <a data-page="audit" href="#">Audit</a>
+        <a data-page="users" href="#">Users</a>
+        <a data-page="settings" href="#">Settings</a>
+      </nav>
+      <div class="user"><span id="current-user">admin</span> <button id="logout">Logout</button></div>
+    </aside>
+
+    <main class="content">
+      <header>
+        <h2 id="page-title">Dashboard</h2>
+      </header>
+
+      <section id="dashboard" class="page-section active">
+        <div class="stats">
+          <div class="stat"><h3 id="stat-total">0</h3><p>Total Machines</p></div>
+          <div class="stat"><h3 id="stat-online">0</h3><p>Online</p></div>
+          <div class="stat"><h3 id="stat-offline">0</h3><p>Offline</p></div>
+          <div class="stat"><h3 id="stat-attention">0</h3><p>Needs Attention</p></div>
+          <div class="stat"><h3 id="stat-healthy">0%</h3><p>Fleet Healthy</p></div>
+        </div>
+        <div class="charts-row">
+          <div class="chart-card"><canvas id="statusChart"></canvas></div>
+          <div class="chart-card"><canvas id="platformChart"></canvas></div>
+        </div>
+        <div class="install-card">
+          <h3>Add a Windows agent</h3>
+          <p>Run this command as Administrator on the target machine:</p>
+          <code id="agent-install-cmd"></code>
+        </div>
+      </section>
+
+      <section id="devices" class="page-section">
+        <div class="toolbar">
+          <button id="refresh-devices">Refresh</button>
+          <button id="add-device">Add device</button>
+        </div>
+        <table class="data-table" id="devices-table">
+          <thead>
+            <tr><th>Hostname</th><th>Status</th><th>OS</th><th>CPU %</th><th>RAM %</th><th>Disk %</th><th>Last Seen</th><th>Group</th><th>Actions</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="device-detail" class="page-section">
+        <button class="back" id="back-to-devices">&larr; Back to devices</button>
+        <h3 id="device-detail-name"></h3>
+        <div class="tabs">
+          <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="terminal">Live Terminal</button>
+          <button class="tab" data-tab="remote">Remote Desktop</button>
+          <button class="tab" data-tab="history">Command History</button>
+        </div>
+        <div id="tab-overview" class="tab-content active">
+          <div class="charts-row">
+            <div class="chart-card"><canvas id="cpuChart"></canvas></div>
+            <div class="chart-card"><canvas id="memoryChart"></canvas></div>
+          </div>
+          <div class="command-console">
+            <h4>Command console</h4>
+            <select id="console-shell"><option value="powershell">PowerShell</option><option value="cmd">CMD</option><option value="bash">Bash</option></select>
+            <input type="text" id="console-command" placeholder="Enter command and press Enter">
+            <button id="run-console">Run</button>
+            <pre id="console-output"></pre>
+          </div>
+        </div>
+        <div id="tab-terminal" class="tab-content">
+          <div id="terminal" class="terminal"></div>
+          <input type="text" id="terminal-input" placeholder="Type command and press Enter">
+        </div>
+        <div id="tab-remote" class="tab-content">
+          <img id="remote-screen" alt="Remote desktop stream" />
+          <p class="hint">Requires agent running on a machine with a display. For Windows endpoints, a session must be active.</p>
+        </div>
+        <div id="tab-history" class="tab-content">
+          <table class="data-table" id="history-table"><thead><tr><th>Created</th><th>Shell</th><th>Command</th><th>Status</th><th>Exit</th><th>Output</th></tr></thead><tbody></tbody></table>
+        </div>
+      </section>
+
+      <section id="alerts" class="page-section"><p>Alerts page is a placeholder for check-based alerting rules. Build out thresholds under Settings.</p></section>
+      <section id="software" class="page-section">
+        <div class="toolbar">
+          <select id="software-device"><option value="">All devices</option></select>
+          <button id="refresh-software">Refresh</button>
+        </div>
+        <table class="data-table" id="software-table"><thead><tr><th>Device</th><th>Name</th><th>Version</th><th>Publisher</th><th>Install Date</th><th>Source</th></tr></thead><tbody></tbody></table>
+      </section>
+      <section id="patches" class="page-section">
+        <div class="toolbar">
+          <select id="patches-device"><option value="">All devices</option></select>
+          <button id="refresh-patches">Refresh</button>
+        </div>
+        <table class="data-table" id="patches-table"><thead><tr><th>Device</th><th>HotFix ID</th><th>Description</th><th>Installed On</th><th>Installed By</th></tr></thead><tbody></tbody></table>
+      </section>
+      <section id="scripts" class="page-section">
+        <div class="toolbar">
+          <button id="add-script">New script</button>
+        </div>
+        <table class="data-table" id="scripts-table"><thead><tr><th>Name</th><th>Language</th><th>Description</th></tr></thead><tbody></tbody></table>
+        <div id="script-editor" class="hidden">
+          <input type="text" id="script-name" placeholder="Script name">
+          <select id="script-lang"><option value="powershell">PowerShell</option><option value="cmd">Batch</option><option value="bash">Bash</option><option value="python">Python</option></select>
+          <textarea id="script-code" rows="10" placeholder="Paste script here"></textarea>
+          <input type="text" id="script-desc" placeholder="Description">
+          <button id="save-script">Save</button>
+        </div>
+      </section>
+      <section id="automations" class="page-section">
+        <div class="toolbar">
+          <button id="add-automation">New automation</button>
+        </div>
+        <table class="data-table" id="automations-table"><thead><tr><th>Name</th><th>Schedule</th><th>Script</th><th>Target Group</th><th>Enabled</th></tr></thead><tbody></tbody></table>
+      </section>
+      <section id="toolbox" class="page-section">
+        <p>Select a Windows system tool to run on the agent. Output is returned via the command queue.</p>
+        <div class="toolbar">
+          <select id="toolbox-device"></select>
+          <select id="toolbox-action">
+            <option value="services">List Services</option>
+            <option value="eventlog-system">System Event Log (last 20)</option>
+            <option value="eventlog-application">Application Event Log (last 20)</option>
+            <option value="registry-run">Registry Run Keys</option>
+            <option value="users">Local Users</option>
+            <option value="firewall">Firewall Status</option>
+          </select>
+          <button id="run-toolbox">Run</button>
+        </div>
+        <pre id="toolbox-output">Select a device and tool, then click Run.</pre>
+      </section>
+      <section id="reports" class="page-section"><p>Reports can be generated from audit logs, device metrics, and automation run history.</p></section>
+      <section id="audit" class="page-section">
+        <table class="data-table" id="audit-table"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody></tbody></table>
+      </section>
+      <section id="users" class="page-section">
+        <div class="toolbar"><button id="add-user">Add user</button></div>
+        <table class="data-table" id="users-table"><thead><tr><th>Username</th><th>Email</th><th>Admin</th></tr></thead><tbody></tbody></table>
+      </section>
+      <section id="settings" class="page-section"><p>Settings placeholder. Key environment variables: AGENT_TOKEN, SECRET_KEY, DATABASE_URL.</p></section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
