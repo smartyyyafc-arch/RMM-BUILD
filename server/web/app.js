@@ -122,18 +122,29 @@ async function loadDashboard() {
 function renderPie(id, label, labels, data, colors) {
   const ctx = $('#' + id)?.getContext('2d');
   if (!ctx) return;
-  if (charts[id]) charts[id].destroy();
+  if (charts[id]) {
+    charts[id].data.labels = labels;
+    charts[id].data.datasets[0].data = data;
+    charts[id].update('none');
+    return;
+  }
   charts[id] = new Chart(ctx, {
     type: 'pie',
     data: { labels, datasets: [{ data, backgroundColor: colors }] },
-    options: { responsive: true, plugins: { title: { display: true, text: label, color: '#e2e8f0' } }, legend: { labels: { color: '#e2e8f0' } } }
+    options: { responsive: true, plugins: { title: { display: true, text: label, color: '#e2e8f0' }, legend: { labels: { color: '#e2e8f0' } } } }
   });
 }
 
 function renderBar(id, label, labels, total, online) {
   const ctx = $('#' + id)?.getContext('2d');
   if (!ctx) return;
-  if (charts[id]) charts[id].destroy();
+  if (charts[id]) {
+    charts[id].data.labels = labels;
+    charts[id].data.datasets[0].data = total;
+    charts[id].data.datasets[1].data = online;
+    charts[id].update('none');
+    return;
+  }
   charts[id] = new Chart(ctx, {
     type: 'bar',
     data: {
