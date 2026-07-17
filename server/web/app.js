@@ -205,17 +205,19 @@ async function queueCurtainFromModal() {
 
 async function doConnect() {
   if (!connectPendingId) return;
-  await queueCurtainFromModal();
+  const deviceId = connectPendingId;
   const tab = $('#connect-type').value;
+  await queueCurtainFromModal();
   closeConnectModal();
-  openDevice(connectPendingId, tab);
+  openDevice(deviceId, tab);
 }
 
 async function doCurtainOnly() {
   if (!connectPendingId) return;
+  const deviceId = connectPendingId;
   await queueCurtainFromModal();
   closeConnectModal();
-  openDevice(connectPendingId, 'curtain');
+  openDevice(deviceId, 'curtain');
 }
 
 $('#refresh-devices').addEventListener('click', loadDevices);
