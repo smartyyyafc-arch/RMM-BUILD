@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 
@@ -21,11 +21,11 @@ class Device(Base):
     os = Column(String)
     platform = Column(String)
     version = Column(String)
-    status = Column(String, default="offline")
+    status = Column(String, default="offline", index=True)
     cpu_percent = Column(Float, default=0.0)
     memory_percent = Column(Float, default=0.0)
     disk_percent = Column(Float, default=0.0)
-    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_seen = Column(DateTime(timezone=True), server_default=func.now())
     group = Column(String, default="default")
     tags = Column(String, default="")
     ip = Column(String)
@@ -34,10 +34,10 @@ class Device(Base):
 class Command(Base):
     __tablename__ = "commands"
     id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(Integer, ForeignKey("devices.id"))
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True)
     shell = Column(String, default="powershell")
     command = Column(Text)
-    status = Column(String, default="queued")  # queued, running, done, failed
+    status = Column(String, default="queued", index=True)  # queued, running, done, failed
     exit_code = Column(Integer, nullable=True)
     output = Column(Text, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -72,7 +72,7 @@ class Automation(Base):
 class Software(Base):
     __tablename__ = "software"
     id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(Integer, ForeignKey("devices.id"))
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True)
     name = Column(String)
     version = Column(String)
     publisher = Column(String)
@@ -83,7 +83,7 @@ class Software(Base):
 class Patch(Base):
     __tablename__ = "patches"
     id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(Integer, ForeignKey("devices.id"))
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True)
     hotfix_id = Column(String)
     description = Column(String)
     installed_on = Column(String)

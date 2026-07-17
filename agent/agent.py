@@ -110,6 +110,7 @@ class Agent:
     def report_result(self, cmd_id, exit_code, output):
         try:
             requests.post(f"{self.server}/api/agent/command/{cmd_id}/result", json={
+                "token": self.token,
                 "status": "done" if exit_code == 0 else "failed",
                 "exit_code": exit_code,
                 "output": output[:100000]
@@ -142,6 +143,8 @@ class Agent:
 
     def _curtain_script(self, command):
         action, _, arg = command.partition(":")
+        action = action.strip()[:50].replace('"', '\\"').replace('\n', '').replace('\r', '')
+        arg = arg.strip()[:500].replace('"', '\\"').replace('\n', '').replace('\r', '')
         return '''
 import tkinter as tk
 from PIL import Image, ImageTk

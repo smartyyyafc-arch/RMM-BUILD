@@ -7,8 +7,14 @@ let terminalWsMode = null;
 let dashboardInterval = null;
 let currentDevice = null;
 let charts = {};
+let isAdmin = false;
 
 function $(sel) { return document.querySelector(sel); }
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -36,7 +42,7 @@ function showPage(id) {
   if (id === 'scripts') loadScripts();
   if (id === 'automations') loadAutomations();
   if (id === 'audit') loadAudit();
-  if (id === 'users') loadUsers();
+  if (id === 'users' && isAdmin) loadUsers();
   if (id === 'software') loadSoftware();
   if (id === 'patches') loadPatches();
   if (id === 'toolbox') loadToolbox();
@@ -56,7 +62,12 @@ $('#login-form').addEventListener('submit', async e => {
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     const me = await api('GET', '/auth/me');
-    $('#current-user').textContent = me.username;
+    $('#current-user').textContent = esc(me.username);
+    isAdmin = !!me.is_admin;
+    if (!isAdmin) {
+      document.querySelector('.sidebar nav a[data-page="users"]').style.display = 'none';
+      $('#add-user').style.display = 'none';
+    }
     showPage('dashboard');
     startPolling();
   } catch (err) {
@@ -136,7 +147,7 @@ async function loadDevices() {
   tbody.innerHTML = '';
   devices.forEach(d => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${d.hostname}</td><td class="status-${d.status}">${d.status}</td><td>${d.os}</td><td>${d.cpu_percent?.toFixed(1)}</td><td>${d.memory_percent?.toFixed(1)}</td><td>${d.disk_percent?.toFixed(1)}</td><td>${formatDate(d.last_seen)}</td><td>${d.group}</td><td><button data-id="${d.id}">Open</button></td>`;
+    tr.innerHTML = `<td>${esc(d.hostname)}</td><td class="status-${esc(d.status)}">${esc(d.status)}</td><td>${esc(d.os)}</td><td>${d.cpu_percent?.toFixed(1)}</td><td>${d.memory_percent?.toFixed(1)}</td><td>${d.disk_percent?.toFixed(1)}</td><td>${formatDate(d.last_seen)}</td><td>${esc(d.group)}</td><td><button data-id="${d.id}">Open</button></td>`;
     tr.querySelector('button').addEventListener('click', () => openDevice(d.id));
     tbody.appendChild(tr);
   });
@@ -162,7 +173,7 @@ async function loadDeviceDetail(id) {
   tbody.innerHTML = '';
   cmds.forEach(c => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${formatDate(c.created_at)}</td><td>${c.shell}</td><td>${c.command}</td><td>${c.status}</td><td>${c.exit_code ?? ''}</td><td><pre>${c.output || ''}</pre></td>`;
+    tr.innerHTML = `<td>${formatDate(c.created_at)}</td><td>${esc(c.shell)}</td><td>${esc(c.command)}</td><td>${esc(c.status)}</td><td>${c.exit_code ?? ''}</td><td><pre>${esc(c.output || '')}</pre></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -301,7 +312,7 @@ function connectRemote() {
   terminalWsMode = 'remote';
   const img = $('#remote-screen');
   img.style.display = 'block';
-  terminalWs.onopen = () => terminalWs.send(JSON.stringify({ type: 'remote_start' }));
+  terminalWs.onopen = () => terminalWs.send(JSON.stringify({ type: 'remote_start', device_id: selectedDeviceId }));
   terminalWs.onmessage = ev => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'frame') img.src = msg.data;
@@ -314,7 +325,7 @@ async function loadScripts() {
   tbody.innerHTML = '';
   scripts.forEach(s => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${s.name}</td><td>${s.language}</td><td>${s.description || ''}</td>`;
+    tr.innerHTML = `<td>${esc(s.name)}</td><td>${esc(s.language)}</td><td>${esc(s.description || '')}</td>`;
     tbody.appendChild(tr);
   });
 }
@@ -340,7 +351,7 @@ async function loadAutomations() {
   automations.forEach(a => {
     const script = scripts.find(s => s.id === a.script_id);
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${a.name}</td><td>${a.schedule}</td><td>${script?.name || a.script_id}</td><td>${a.target_group}</td><td>${a.enabled}</td>`;
+    tr.innerHTML = `<td>${esc(a.name)}</td><td>${esc(a.schedule)}</td><td>${esc(script?.name || String(a.script_id))}</td><td>${esc(a.target_group)}</td><td>${a.enabled}</td>`;
     tbody.appendChild(tr);
   });
 }
@@ -362,13 +373,22 @@ async function loadAudit() {
   tbody.innerHTML = '';
   logs.forEach(a => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${formatDate(a.created_at)}</td><td>${a.username}</td><td>${a.action}</td><td>${a.detail}</td>`;
+    tr.innerHTML = `<td>${formatDate(a.created_at)}</td><td>${esc(a.username)}</td><td>${esc(a.action)}</td><td>${esc(a.detail)}</td>`;
     tbody.appendChild(tr);
   });
 }
 
 async function loadUsers() {
-  // Not exposed; placeholder
+  if (!isAdmin) return;
+  const users = await api('GET', '/auth/users');
+  if (!users) return;
+  const tbody = $('#users-table tbody');
+  tbody.innerHTML = '';
+  users.forEach(u => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${esc(u.username)}</td><td>${esc(u.email || '')}</td><td>${u.is_admin ? 'Yes' : 'No'}</td>`;
+    tbody.appendChild(tr);
+  });
 }
 
 async function populateDeviceSelects() {
@@ -407,7 +427,7 @@ async function loadSoftware() {
   tbody.innerHTML = '';
   rows.forEach(s => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${s.device || ''}</td><td>${s.name}</td><td>${s.version || ''}</td><td>${s.publisher || ''}</td><td>${s.install_date || ''}</td><td>${s.source || ''}</td>`;
+    tr.innerHTML = `<td>${esc(s.device || '')}</td><td>${esc(s.name)}</td><td>${esc(s.version || '')}</td><td>${esc(s.publisher || '')}</td><td>${esc(s.install_date || '')}</td><td>${esc(s.source || '')}</td>`;
     tbody.appendChild(tr);
   });
 }
@@ -422,7 +442,7 @@ async function loadPatches() {
   tbody.innerHTML = '';
   rows.forEach(p => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${p.device || ''}</td><td>${p.hotfix_id}</td><td>${p.description || ''}</td><td>${p.installed_on || ''}</td><td>${p.installed_by || ''}</td>`;
+    tr.innerHTML = `<td>${esc(p.device || '')}</td><td>${esc(p.hotfix_id)}</td><td>${esc(p.description || '')}</td><td>${esc(p.installed_on || '')}</td><td>${esc(p.installed_by || '')}</td>`;
     tbody.appendChild(tr);
   });
 }
@@ -463,8 +483,14 @@ $('#software-device').addEventListener('change', loadSoftware);
 $('#patches-device').addEventListener('change', loadPatches);
 $('#refresh-software').addEventListener('click', loadSoftware);
 $('#refresh-patches').addEventListener('click', loadPatches);
+$('#refresh-devices').addEventListener('click', loadDevices);
+$('#add-device').addEventListener('click', () => {
+  showPage('dashboard');
+  alert('Copy the install command from the Dashboard and run it as Administrator on the target machine.');
+});
 
 $('#add-user').addEventListener('click', async () => {
+  if (!isAdmin) return;
   const username = prompt('Username');
   const password = prompt('Password');
   const is_admin = confirm('Is admin?');
@@ -482,5 +508,14 @@ function formatDate(s) {
 if (token) {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
-  api('GET', '/auth/me').then(me => { $('#current-user').textContent = me.username; showPage('dashboard'); startPolling(); }).catch(logout);
+  api('GET', '/auth/me').then(me => {
+    $('#current-user').textContent = esc(me.username);
+    isAdmin = !!me.is_admin;
+    if (!isAdmin) {
+      document.querySelector('.sidebar nav a[data-page="users"]').style.display = 'none';
+      $('#add-user').style.display = 'none';
+    }
+    showPage('dashboard');
+    startPolling();
+  }).catch(logout);
 }

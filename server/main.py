@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -37,16 +37,55 @@ def log_audit(db: Session, username: str, action: str, detail: str = ""):
 
 async def mark_offline():
     while True:
-        await asyncio.sleep(30)
-        db = SessionLocal()
         try:
-            now = datetime.now(timezone.utc).timestamp()
-            for d in db.query(Device).filter(Device.status == "online").all():
-                if d.last_seen and d.last_seen.timestamp() < now - HEARTBEAT_TIMEOUT_SECONDS:
-                    d.status = "offline"
-            db.commit()
-        finally:
-            db.close()
+            await asyncio.sleep(30)
+            db = SessionLocal()
+            try:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+                for d in db.query(Device).filter(Device.status == "online").all():
+                    if d.last_seen:
+                        ls = d.last_seen if d.last_seen.tzinfo else d.last_seen.replace(tzinfo=timezone.utc)
+                        if ls < cutoff:
+                            d.status = "offline"
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print("mark_offline error:", e)
+
+
+async def run_automations():
+    try:
+        from croniter import croniter as _croniter
+    except ImportError:
+        print("croniter not installed; automations disabled")
+        return
+    while True:
+        try:
+            await asyncio.sleep(60)
+            db = SessionLocal()
+            try:
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                for automation in db.query(Automation).filter(Automation.enabled == True).all():
+                    try:
+                        cron = _croniter(automation.schedule, now)
+                        prev = cron.get_prev(datetime)
+                        if (now - prev).total_seconds() < 60:
+                            script = db.query(Script).filter(Script.id == automation.script_id).first()
+                            if script:
+                                devices = db.query(Device).filter(
+                                    Device.group == automation.target_group,
+                                    Device.status == "online"
+                                ).all()
+                                for device in devices:
+                                    db.add(Command(device_id=device.id, shell=script.language, command=script.code))
+                    except Exception as e:
+                        print(f"Automation {automation.id} error:", e)
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print("run_automations error:", e)
 
 
 @asynccontextmanager
@@ -58,6 +97,7 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     asyncio.create_task(mark_offline())
+    asyncio.create_task(run_automations())
     yield
 
 
@@ -90,7 +130,7 @@ class UserCreate(BaseModel):
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
     log_audit(db, user.username, "login", "web")
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
@@ -109,6 +149,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), admin: User 
     db.commit()
     log_audit(db, admin.username, "create_user", f"created {payload.username}")
     return {"ok": True}
+
+
+@app.get("/api/auth/users")
+def list_users(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    return [{"id": u.id, "username": u.username, "email": u.email, "is_admin": u.is_admin}
+            for u in db.query(User).order_by(User.username).all()]
 
 
 @app.get("/api/auth/me")
@@ -181,6 +227,10 @@ def heartbeat(payload: HeartbeatPayload, req: Request, db: Session = Depends(get
         Command.device_id == device.id,
         Command.status == "queued"
     ).order_by(Command.created_at.asc()).all()
+    for c in queued:
+        c.status = "running"
+    if queued:
+        db.commit()
     return {
         "commands": [
             {"id": c.id, "shell": c.shell, "command": c.command}
@@ -191,6 +241,8 @@ def heartbeat(payload: HeartbeatPayload, req: Request, db: Session = Depends(get
 
 @app.post("/api/agent/command/{command_id}/result")
 def command_result(command_id: int, payload: dict, db: Session = Depends(get_db)):
+    if payload.get("token") != AGENT_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid agent token")
     cmd = db.query(Command).filter(Command.id == command_id).first()
     if not cmd:
         raise HTTPException(status_code=404, detail="Command not found")
@@ -299,17 +351,19 @@ def queue_command(device_id: int, payload: CommandPayload, db: Session = Depends
 @app.get("/api/devices/{device_id}/software")
 def get_software(device_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     device = db.query(Device).filter(Device.id == device_id).first()
-    hostname = device.hostname if device else ""
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
     rows = db.query(Software).filter(Software.device_id == device_id).order_by(Software.name).all()
-    return [{"id": s.id, "device": hostname, "name": s.name, "version": s.version, "publisher": s.publisher, "install_date": s.install_date, "source": s.source} for s in rows]
+    return [{"id": s.id, "device": device.hostname, "name": s.name, "version": s.version, "publisher": s.publisher, "install_date": s.install_date, "source": s.source} for s in rows]
 
 
 @app.get("/api/devices/{device_id}/patches")
 def get_patches(device_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     device = db.query(Device).filter(Device.id == device_id).first()
-    hostname = device.hostname if device else ""
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
     rows = db.query(Patch).filter(Patch.device_id == device_id).order_by(Patch.installed_on.desc()).all()
-    return [{"id": p.id, "device": hostname, "hotfix_id": p.hotfix_id, "description": p.description, "installed_on": p.installed_on, "installed_by": p.installed_by} for p in rows]
+    return [{"id": p.id, "device": device.hostname, "hotfix_id": p.hotfix_id, "description": p.description, "installed_on": p.installed_on, "installed_by": p.installed_by} for p in rows]
 
 
 @app.get("/api/devices/{device_id}/commands")
@@ -333,6 +387,7 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
     online = db.query(Device).filter(Device.status == "online").count()
     offline = total - online
     needs_attention = db.query(Device).filter(
+        Device.status == "online",
         (Device.cpu_percent > 90) | (Device.memory_percent > 90) | (Device.disk_percent > 90)
     ).count()
     healthy_pct = round(online / total * 100, 1) if total else 0
@@ -382,12 +437,16 @@ def create_script(payload: ScriptPayload, db: Session = Depends(get_db), current
 
 @app.post("/api/devices/{device_id}/run-script/{script_id}")
 def run_script(device_id: int, script_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
     script = db.query(Script).filter(Script.id == script_id).first()
     if not script:
         raise HTTPException(status_code=404, detail="Script not found")
     cmd = Command(device_id=device_id, shell=script.language, command=script.code)
     db.add(cmd)
     db.commit()
+    log_audit(db, current.username, "run_script", f"device={device.hostname} script={script.name}")
     return {"id": cmd.id, "status": "queued"}
 
 
@@ -470,7 +529,8 @@ async def agent_websocket(websocket: WebSocket, agent_id: str, token: str = ""):
     except WebSocketDisconnect:
         pass
     finally:
-        connected_agents.pop(agent_id, None)
+        if connected_agents.get(agent_id) is websocket:
+            connected_agents.pop(agent_id, None)
 
 
 # ---- Operator WebSocket terminal ----

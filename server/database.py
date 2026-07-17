@@ -12,6 +12,7 @@ if DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 else:
     engine = create_engine(DATABASE_URL)

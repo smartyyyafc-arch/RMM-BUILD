@@ -29,10 +29,22 @@ if (-not (Test-Path $nssm)) {
     Copy-Item "$InstallDir\nssm\nssm-2.24\win64\nssm.exe" $nssm -Force
 }
 
-& $nssm install $svcName "python" "`"$InstallDir\agent.py`"" | Out-Null
+# Resolve the full path to python.exe so nssm can find it under LocalSystem's PATH.
+$PythonExe = (Get-Command python -ErrorAction SilentlyContinue)?.Source
+if (-not $PythonExe) { $PythonExe = "python" }
+
+# Generate and persist a stable agent ID so reinstalls don't create duplicate devices.
+$AgentIdFile = "$InstallDir\agent_id.txt"
+if (-not (Test-Path $AgentIdFile)) {
+    [System.Guid]::NewGuid().ToString() | Set-Content $AgentIdFile
+}
+$AgentId = Get-Content $AgentIdFile
+
+& $nssm install $svcName $PythonExe "`"$InstallDir\agent.py`"" | Out-Null
 [System.Environment]::SetEnvironmentVariable("RMM_SERVER", $Server, "Machine")
 [System.Environment]::SetEnvironmentVariable("RMM_AGENT_TOKEN", $Token, "Machine")
-& $nssm set $svcName AppEnvironmentExtra "RMM_SERVER=$Server" "RMM_AGENT_TOKEN=$Token" | Out-Null
+[System.Environment]::SetEnvironmentVariable("RMM_AGENT_ID", $AgentId, "Machine")
+& $nssm set $svcName AppEnvironmentExtra "RMM_SERVER=$Server" "RMM_AGENT_TOKEN=$Token" "RMM_AGENT_ID=$AgentId" | Out-Null
 & $nssm start $svcName | Out-Null
 
-Write-Host "BasicRMM agent installed and started."
+Write-Host "BasicRMM agent installed and started (agent_id=$AgentId)."
