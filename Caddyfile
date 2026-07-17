@@ -1,0 +1,3 @@
+{$RMM_DOMAIN} {
+  reverse_proxy rmm-server:8000
+}

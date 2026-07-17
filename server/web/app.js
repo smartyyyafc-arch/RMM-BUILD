@@ -108,15 +108,15 @@ async function loadDashboard() {
   const plats = Object.keys(dash.by_platform);
   renderBar('platformChart', 'Status by Platform', plats, plats.map(p => dash.by_platform[p].total), plats.map(p => dash.by_platform[p].online));
 
-  const host = window.location.host;
-  const server = `http://${host}`;
+  const server = window.location.origin;
+  const domain = window.location.hostname;
   const token = 'agent-secret-change-me';
   const agentUrl = `${server}/agent/agent.py`;
   const psOneLiner = `$ServerUrl="${server}"; $EnrollToken="${token}"; $AgentUrl="${agentUrl}"; Invoke-WebRequest -UseBasicParsing -Uri "${server}/agent/install.ps1?token=${token}" -OutFile "$env:TEMP\\rmm-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\rmm-install.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`;
   $('#agent-install-ps').textContent = psOneLiner;
   $('#agent-install-setup').textContent = psOneLiner;
   $('#agent-install-msi').textContent = `msiexec /i ${server}/agent/BasicRMM-Agent.msi RMM_SERVER=${server} RMM_AGENT_TOKEN=${token} /qn /norestart`;
-  $('#agent-install-gpo').textContent = `$ServerUrl="${server}"; $EnrollToken="${token}"; $AgentUrl="${agentUrl}"; Invoke-WebRequest -UseBasicParsing -Uri "${server}/agent/install.ps1?token=${token}" -OutFile "\\${host}\\netlogon\\rmm-agent.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "\\${host}\\netlogon\\rmm-agent.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`;
+  $('#agent-install-gpo').textContent = `$ServerUrl="${server}"; $EnrollToken="${token}"; $AgentUrl="${agentUrl}"; Invoke-WebRequest -UseBasicParsing -Uri "${server}/agent/install.ps1?token=${token}" -OutFile "\\\\${domain}\\netlogon\\rmm-agent.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "\\\\${domain}\\netlogon\\rmm-agent.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`;
 }
 
 function renderPie(id, label, labels, data, colors) {
