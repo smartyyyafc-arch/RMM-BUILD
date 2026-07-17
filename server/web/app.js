@@ -103,7 +103,13 @@ async function loadDashboard() {
   renderBar('platformChart', 'Status by Platform', plats, plats.map(p => dash.by_platform[p].total), plats.map(p => dash.by_platform[p].online));
 
   const host = window.location.host;
-  $('#agent-install-cmd').textContent = `powershell -Command "iwr http://${host}/agent/install.ps1 -OutFile install.ps1; .\\install.ps1"`;
+  const server = `http://${host}`;
+  const token = 'agent-secret-change-me';
+  const psOneLiner = `powershell -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile install.ps1; .\\install.ps1"`;
+  $('#agent-install-ps').textContent = psOneLiner;
+  $('#agent-install-setup').textContent = `powershell -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile $env:TEMP\\rmm-setup.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\\rmm-setup.ps1"`;
+  $('#agent-install-msi').textContent = `msiexec /i ${server}/agent/BasicRMM-Agent.msi RMM_SERVER=${server} RMM_AGENT_TOKEN=${token} /qn`;
+  $('#agent-install-gpo').textContent = `powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile '\\${host}\\netlogon\\rmm-agent.ps1'; powershell -ExecutionPolicy Bypass -File '\\${host}\\netlogon\\rmm-agent.ps1'"`;
 }
 
 function renderPie(id, label, labels, data, colors) {
@@ -554,6 +560,16 @@ $('#add-user').addEventListener('click', async () => {
   if (!username || !password) return;
   await api('POST', '/auth/users', { username, password, is_admin });
   loadUsers();
+});
+
+document.querySelectorAll('.install-tab').forEach(t => {
+  t.addEventListener('click', () => {
+    const key = t.dataset.install;
+    document.querySelectorAll('.install-tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.install-pane').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.querySelector(`.install-pane[data-install="${key}"]`).classList.add('active');
+  });
 });
 
 function formatDate(s) {

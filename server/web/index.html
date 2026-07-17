@@ -59,8 +59,28 @@
         </div>
         <div class="install-card">
           <h3>Add a Windows agent</h3>
-          <p>Run this command as Administrator on the target machine:</p>
-          <code id="agent-install-cmd"></code>
+          <div class="install-tabs">
+            <button class="install-tab active" data-install="powershell">PowerShell (.ps1)</button>
+            <button class="install-tab" data-install="setup">Setup (.exe)</button>
+            <button class="install-tab" data-install="msi">Installer (.msi)</button>
+            <button class="install-tab" data-install="gpo">GPO / SCCM</button>
+          </div>
+          <div class="install-pane active" data-install="powershell">
+            <p>Run this command as Administrator on the target machine:</p>
+            <code id="agent-install-ps"></code>
+          </div>
+          <div class="install-pane" data-install="setup">
+            <p>Download and run the agent setup bundle (scripted installer):</p>
+            <code id="agent-install-setup"></code>
+          </div>
+          <div class="install-pane" data-install="msi">
+            <p>Install silently with the generated MSI wrapper:</p>
+            <code id="agent-install-msi"></code>
+          </div>
+          <div class="install-pane" data-install="gpo">
+            <p>Deploy via Group Policy or SCCM using a network share:</p>
+            <code id="agent-install-gpo"></code>
+          </div>
         </div>
       </section>
 

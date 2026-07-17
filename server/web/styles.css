@@ -83,6 +83,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Install card */
 .install-card { background: var(--panel); padding: 20px; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+.install-tabs { display: flex; gap: 8px; margin: 16px 0 12px; flex-wrap: wrap; }
+.install-tab { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; transition: all 0.15s; }
+.install-tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+.install-tab.active { color: var(--text); background: rgba(59,130,246,0.15); border-color: var(--accent); }
+.install-pane { display: none; }
+.install-pane.active { display: block; }
+.install-pane p { color: var(--muted); margin: 0 0 8px; font-size: 0.9rem; }
 .install-card code { display: block; margin-top: 10px; padding: 14px; background: var(--bg); border-radius: 8px; word-break: break-all; font-family: ui-monospace, monospace; color: #a5f3fc; border: 1px solid var(--border); }
 
 /* Terminal / console */
