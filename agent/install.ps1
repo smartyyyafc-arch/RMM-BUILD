@@ -1,4 +1,10 @@
 # BasicRMM Windows agent installer
+param(
+    [string]$ServerUrl = "",
+    [string]$EnrollToken = "",
+    [string]$AgentUrl = ""
+)
+
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = "Stop"
 try { [Console]::WindowStyle = 'Hidden' } catch {}
@@ -8,17 +14,17 @@ try {
     if (-not $admin) { exit 1 }
 } catch { exit 1 }
 
-$Server = if ($env:RMM_SERVER) { $env:RMM_SERVER } else { Read-Host "Enter server URL (e.g. http://rmm.example.com:8000)" }
-$Token = if ($env:RMM_AGENT_TOKEN) { $env:RMM_AGENT_TOKEN } else { Read-Host "Enter agent token" }
-$InstallDir = "$env:ProgramFiles\BasicRMM\Agent"
+$Server = if ($ServerUrl) { $ServerUrl } elseif ($env:RMM_SERVER) { $env:RMM_SERVER } else { Read-Host "Enter server URL (e.g. https://rmm.example.com)" }
+$Token = if ($EnrollToken) { $EnrollToken } elseif ($env:RMM_AGENT_TOKEN) { $env:RMM_AGENT_TOKEN } else { Read-Host "Enter agent token" }
+$AgentDownload = if ($AgentUrl) { $AgentUrl } else { "$Server/agent/agent.py" }
 
+$InstallDir = "$env:ProgramFiles\BasicRMM\Agent"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 $reqUrl = "$Server/agent/requirements.txt"
-$agentUrl = "$Server/agent/agent.py"
 
 Invoke-WebRequest -Uri $reqUrl -OutFile "$InstallDir\requirements.txt" -UseBasicParsing
-Invoke-WebRequest -Uri $agentUrl -OutFile "$InstallDir\agent.py" -UseBasicParsing
+Invoke-WebRequest -Uri $AgentDownload -OutFile "$InstallDir\agent.py" -UseBasicParsing
 
 python -m pip install -r "$InstallDir\requirements.txt" --quiet
 

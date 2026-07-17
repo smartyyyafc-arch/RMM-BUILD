@@ -111,11 +111,12 @@ async function loadDashboard() {
   const host = window.location.host;
   const server = `http://${host}`;
   const token = 'agent-secret-change-me';
-  const psOneLiner = `powershell -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile $env:TEMP\\rmm-install.ps1 -UseBasicParsing; & $env:TEMP\\rmm-install.ps1"`;
+  const agentUrl = `${server}/agent/agent.py`;
+  const psOneLiner = `$ServerUrl="${server}"; $EnrollToken="${token}"; $AgentUrl="${agentUrl}"; Invoke-WebRequest -UseBasicParsing -Uri "${server}/agent/install.ps1?token=${token}" -OutFile "$env:TEMP\\rmm-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\rmm-install.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`;
   $('#agent-install-ps').textContent = psOneLiner;
   $('#agent-install-setup').textContent = psOneLiner;
   $('#agent-install-msi').textContent = `msiexec /i ${server}/agent/BasicRMM-Agent.msi RMM_SERVER=${server} RMM_AGENT_TOKEN=${token} /qn /norestart`;
-  $('#agent-install-gpo').textContent = `powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$env:RMM_SERVER='${server}'; $env:RMM_AGENT_TOKEN='${token}'; iwr ${server}/agent/install.ps1 -OutFile '\\${host}\\netlogon\\rmm-agent.ps1' -UseBasicParsing; & '\\${host}\\netlogon\\rmm-agent.ps1'"`;
+  $('#agent-install-gpo').textContent = `$ServerUrl="${server}"; $EnrollToken="${token}"; $AgentUrl="${agentUrl}"; Invoke-WebRequest -UseBasicParsing -Uri "${server}/agent/install.ps1?token=${token}" -OutFile "\\${host}\\netlogon\\rmm-agent.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "\\${host}\\netlogon\\rmm-agent.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`;
 }
 
 function renderPie(id, label, labels, data, colors) {
