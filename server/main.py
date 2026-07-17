@@ -590,9 +590,9 @@ def get_settings(db: Session = Depends(get_db), current: User = Depends(get_curr
 
 
 class SettingsPayload(BaseModel):
-    threshold_cpu: Optional[str] = None
-    threshold_memory: Optional[str] = None
-    threshold_disk: Optional[str] = None
+    threshold_cpu: Optional[float] = None
+    threshold_memory: Optional[float] = None
+    threshold_disk: Optional[float] = None
     server_url: Optional[str] = None
 
 
@@ -602,10 +602,11 @@ def update_settings(payload: SettingsPayload, db: Session = Depends(get_db), cur
         if value is None:
             continue
         s = db.query(Setting).filter(Setting.key == key).first()
+        val = str(value)
         if s:
-            s.value = str(value)
+            s.value = val
         else:
-            db.add(Setting(key=key, value=str(value)))
+            db.add(Setting(key=key, value=val))
     db.commit()
     return {"ok": True}
 
