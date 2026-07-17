@@ -710,6 +710,85 @@ async def operator_terminal(websocket: WebSocket, device_id: int, token: str = "
             ops.remove(websocket)
 
 
+# ---- Commands (individual poll) ----
+
+@app.get("/api/commands/{command_id}")
+def get_command(command_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    c = db.query(Command).filter(Command.id == command_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Command not found")
+    return {
+        "id": c.id, "shell": c.shell, "command": c.command,
+        "status": c.status, "exit_code": c.exit_code, "output": c.output,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "completed_at": c.completed_at.isoformat() if c.completed_at else None
+    }
+
+
+# ---- Delete endpoints ----
+
+@app.delete("/api/devices/{device_id}")
+def delete_device(device_id: int, db: Session = Depends(get_db), current: User = Depends(require_admin)):
+    d = db.query(Device).filter(Device.id == device_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Device not found")
+    db.query(Command).filter(Command.device_id == device_id).delete()
+    db.query(Software).filter(Software.device_id == device_id).delete()
+    db.query(Patch).filter(Patch.device_id == device_id).delete()
+    db.query(Alert).filter(Alert.device_id == device_id).delete()
+    hostname = d.hostname
+    db.delete(d)
+    db.commit()
+    log_audit(db, current.username, "delete_device", f"deleted {hostname}")
+    return {"ok": True}
+
+
+@app.delete("/api/scripts/{script_id}")
+def delete_script(script_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    s = db.query(Script).filter(Script.id == script_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Script not found")
+    db.delete(s)
+    db.commit()
+    return {"ok": True}
+
+
+@app.put("/api/scripts/{script_id}")
+def update_script(script_id: int, payload: ScriptPayload, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    s = db.query(Script).filter(Script.id == script_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Script not found")
+    s.name = payload.name
+    s.language = payload.language
+    s.code = payload.code
+    s.description = payload.description
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/automations/{automation_id}")
+def delete_automation(automation_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    a = db.query(Automation).filter(Automation.id == automation_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    db.delete(a)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/auth/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), current: User = Depends(require_admin)):
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    if u.username == current.username:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    db.delete(u)
+    db.commit()
+    log_audit(db, current.username, "delete_user", f"deleted {u.username}")
+    return {"ok": True}
+
+
 # ---- Static frontend ----
 
 app.mount("/", StaticFiles(directory="web", html=True), name="static")
