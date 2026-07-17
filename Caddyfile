@@ -1,0 +1,9 @@
+{
+    servers {
+        protocols h1
+    }
+}
+
+{$RMM_DOMAIN} {
+    reverse_proxy rmm-server:8000
+}

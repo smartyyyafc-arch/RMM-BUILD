@@ -1,0 +1,45 @@
+services:
+  rmm-server:
+    build: ./server
+    container_name: rmm-server
+    expose:
+      - "8000"
+    volumes:
+      - rmm-data:/app/data
+      - ./agent:/app/agent:ro
+    environment:
+      - DATABASE_URL=sqlite:////app/data/rmm.db
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - AGENT_TOKEN=${AGENT_TOKEN:-agent-secret-change-me}
+      - AGENT_FILES_DIR=/app/agent
+    restart: unless-stopped
+    networks:
+      - rmm
+
+  caddy:
+    image: caddy:2
+    container_name: rmm-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - RMM_DOMAIN=${RMM_DOMAIN:-3729-ndax.com}
+    networks:
+      - rmm
+    depends_on:
+      - rmm-server
+
+networks:
+  rmm:
+    driver: bridge
+
+volumes:
+  rmm-data:
+  caddy-data:
+  caddy-config:
