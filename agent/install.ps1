@@ -47,11 +47,8 @@ $action   = New-ScheduledTaskAction `
                -Execute  "powershell.exe" `
                -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\launch.ps1`""
 
-# Two triggers: at startup AND when any user logs on (covers both cases)
-$triggers = @(
-    New-ScheduledTaskTrigger -AtStartup,
-    New-ScheduledTaskTrigger -AtLogOn
-)
+$triggerBoot  = New-ScheduledTaskTrigger -AtStartup
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn
 
 $settings = New-ScheduledTaskSettingsSet `
                -ExecutionTimeLimit 0 `
@@ -60,15 +57,18 @@ $settings = New-ScheduledTaskSettingsSet `
                -StartWhenAvailable `
                -MultipleInstances IgnoreNew
 
-# Run as SYSTEM with highest privileges — works headless for heartbeat/commands
-# Screen capture (HVNC) works when a user session exists
 $principal = New-ScheduledTaskPrincipal `
                -UserId    "SYSTEM" `
                -LogonType ServiceAccount `
                -RunLevel  Highest
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
-    -Settings $settings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $action `
+    -Trigger $triggerBoot -Settings $settings -Principal $principal -Force | Out-Null
+
+# Add the logon trigger on top
+$task = Get-ScheduledTask -TaskName $TaskName
+$task.Triggers += $triggerLogon
+Set-ScheduledTask -InputObject $task | Out-Null
 
 # Start it right now without waiting for reboot
 Start-ScheduledTask -TaskName $TaskName
