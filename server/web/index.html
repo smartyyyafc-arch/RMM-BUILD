@@ -1,450 +1,150 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BasicRMM Operator Console</title>
-  <link rel="stylesheet" href="styles.css?v=3">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>BasicRMM — Operator Console</title>
+<link rel="stylesheet" href="styles.css?v=4"/>
 </head>
 <body>
 
-<!-- Toast container -->
-<div id="toast-container"></div>
-
-<div id="login" class="page">
+<!-- LOGIN -->
+<div id="login-screen" class="login-screen">
   <div class="login-box">
-    <div class="brand-logo">BasicRMM</div>
-    <h2>Sign in</h2>
-    <form id="login-form">
-      <input type="text" id="username" placeholder="Username" value="admin" autocomplete="username" required>
-      <input type="password" id="password" placeholder="Password" value="admin" autocomplete="current-password" required>
-      <button type="submit">Sign in</button>
+    <div class="login-logo"><span class="logo-circle">R</span></div>
+    <h1 class="login-title">BasicRMM</h1>
+    <p class="login-sub">Operator Console</p>
+    <form id="login-form" autocomplete="off">
+      <div class="field-group">
+        <label>Username</label>
+        <input id="login-user" type="text" placeholder="admin" autocomplete="username"/>
+      </div>
+      <div class="field-group">
+        <label>Password</label>
+        <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password"/>
+      </div>
+      <div id="login-err" class="login-err hidden"></div>
+      <button type="submit" class="btn btn-primary w-full">Sign In</button>
     </form>
-    <p id="login-error" class="error"></p>
   </div>
 </div>
 
-<div id="app" class="hidden">
-  <aside class="sidebar">
-    <div class="brand">BasicRMM</div>
-    <nav>
-      <a data-page="dashboard" class="active" href="#">Dashboard</a>
-      <a data-page="devices" href="#">Devices</a>
-      <a data-page="alerts" href="#">Alerts</a>
-      <a data-page="software" href="#">Software</a>
-      <a data-page="patches" href="#">Patches</a>
-      <a data-page="scripts" href="#">Scripts</a>
-      <a data-page="automations" href="#">Automations</a>
-      <a data-page="toolbox" href="#">Toolbox</a>
-      <a data-page="reports" href="#">Reports</a>
-      <a data-page="audit" href="#">Audit Log</a>
-      <a data-page="users" href="#">Users</a>
-      <a data-page="settings" href="#">Settings</a>
+<!-- APP SHELL -->
+<div id="app" class="app-shell hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo-circle">R</div>
+      <div class="brand-text">
+        <div class="brand-name">BasicRMM</div>
+        <div class="brand-sub">OPERATOR CONSOLE</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">OPERATIONS</div>
+      <a class="nav-item" data-page="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Dashboard
+      </a>
+      <a class="nav-item" data-page="devices">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 20h8M12 18v2"/></svg>
+        Devices
+      </a>
+      <a class="nav-item" data-page="alerts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        Alerts
+        <span class="nav-badge hidden" id="alert-badge">0</span>
+      </a>
+      <a class="nav-item" data-page="software">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        Software
+      </a>
+      <a class="nav-item" data-page="patches">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Patches
+      </a>
+      <a class="nav-item" data-page="scripts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        Scripts
+      </a>
+      <a class="nav-item" data-page="automations">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+        Automations
+      </a>
+      <a class="nav-item" data-page="toolbox">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Toolbox
+      </a>
+
+      <div class="nav-section-label" style="margin-top:8px">INSIGHTS</div>
+      <a class="nav-item" data-page="reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+        Reports
+      </a>
+      <a class="nav-item" data-page="audit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        Audit
+      </a>
+      <a class="nav-item" data-page="users">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Users
+      </a>
+      <a class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </a>
     </nav>
-    <div class="user-bar">
-      <span id="current-user">admin</span>
-      <button id="logout">Logout</button>
+
+    <div class="sidebar-footer">
+      <span class="online-dot"></span>
+      <span id="sidebar-online-count">0 agents online</span>
     </div>
   </aside>
 
-  <main class="content">
+  <!-- MAIN -->
+  <div class="main-area">
     <header class="topbar">
-      <h2 id="page-title">Dashboard</h2>
+      <div class="topbar-left">
+        <div class="breadcrumb">
+          <span class="breadcrumb-fleet">Fleet</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          <span id="breadcrumb-page">Dashboard</span>
+        </div>
+      </div>
+      <div class="topbar-center">
+        <div class="search-wrap">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="global-search" placeholder="Search devices, alerts, scripts…" class="search-input"/>
+          <kbd class="search-kbd">/</kbd>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="icon-btn" id="notif-btn" title="Alerts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span class="topbar-badge hidden" id="topbar-badge">0</span>
+        </button>
+        <button class="icon-btn" id="logout-btn" title="Logout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+        <div class="user-pill">
+          <div class="avatar-circle" id="user-avatar">OP</div>
+          <div class="user-info">
+            <div class="user-name" id="user-name">operator</div>
+            <div class="user-role" id="user-role">operator</div>
+          </div>
+        </div>
+      </div>
     </header>
 
-    <!-- DASHBOARD -->
-    <section id="dashboard" class="page-section active">
-      <div class="stats">
-        <div class="stat stat-blue"><h3 id="stat-total">0</h3><p>Total Machines</p></div>
-        <div class="stat stat-green"><h3 id="stat-online">0</h3><p>Online</p></div>
-        <div class="stat stat-red"><h3 id="stat-offline">0</h3><p>Offline</p></div>
-        <div class="stat stat-yellow"><h3 id="stat-attention">0</h3><p>Needs Attention</p></div>
-        <div class="stat stat-green"><h3 id="stat-healthy">0%</h3><p>Fleet Healthy</p></div>
-      </div>
-      <div class="charts-row">
-        <div class="chart-card"><canvas id="statusChart"></canvas></div>
-        <div class="chart-card"><canvas id="platformChart"></canvas></div>
-      </div>
-      <div class="install-card" id="install-card">
-        <h3>Add a Windows Agent</h3>
-        <p class="muted">Run one of these commands on the target machine to install and register the agent.</p>
-        <div class="install-tabs">
-          <button class="install-tab active" data-install="powershell">PowerShell</button>
-          <button class="install-tab" data-install="setup">Setup EXE</button>
-          <button class="install-tab" data-install="msi">MSI</button>
-          <button class="install-tab" data-install="gpo">GPO / SCCM</button>
-        </div>
-        <div class="install-pane active" data-install="powershell">
-          <p class="muted">Run as Administrator in PowerShell:</p>
-          <div class="code-wrap">
-            <code id="agent-install-ps"></code>
-            <button class="copy-install btn-copy">Copy</button>
-          </div>
-        </div>
-        <div class="install-pane" data-install="setup">
-          <p class="muted">Download the setup bundle and run it:</p>
-          <div class="code-wrap">
-            <code id="agent-install-setup"></code>
-            <button class="copy-install btn-copy">Copy</button>
-          </div>
-        </div>
-        <div class="install-pane" data-install="msi">
-          <p class="muted">Silent MSI install:</p>
-          <div class="code-wrap">
-            <code id="agent-install-msi"></code>
-            <button class="copy-install btn-copy">Copy</button>
-          </div>
-        </div>
-        <div class="install-pane" data-install="gpo">
-          <p class="muted">Deploy via Group Policy startup script:</p>
-          <div class="code-wrap">
-            <code id="agent-install-gpo"></code>
-            <button class="copy-install btn-copy">Copy</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- DEVICES -->
-    <section id="devices" class="page-section">
-      <div class="toolbar">
-        <input type="text" id="device-search" placeholder="Search hostname...">
-        <button id="refresh-devices">Refresh</button>
-        <button id="add-device">+ Add Device</button>
-      </div>
-      <table class="data-table" id="devices-table">
-        <thead>
-          <tr>
-            <th>Hostname / IP</th>
-            <th>Status</th>
-            <th>OS</th>
-            <th>CPU</th>
-            <th>RAM</th>
-            <th>Disk</th>
-            <th>Last Seen</th>
-            <th>Group</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <div class="pagination">
-        <button id="device-prev" disabled>&larr; Prev</button>
-        <span id="device-page-info">Page 1</span>
-        <button id="device-next">Next &rarr;</button>
-      </div>
-    </section>
-
-    <!-- DEVICE DETAIL -->
-    <section id="device-detail" class="page-section">
-      <div class="device-header">
-        <button class="btn-back" id="back-to-devices">&larr; Devices</button>
-        <h3 id="device-detail-name"></h3>
-        <span id="device-status-badge"></span>
-      </div>
-      <div class="tabs">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="terminal">Live Terminal</button>
-        <button class="tab" data-tab="remote">Remote Desktop</button>
-        <button class="tab" data-tab="curtain">Curtain</button>
-        <button class="tab" data-tab="history">Command History</button>
-      </div>
-
-      <!-- Overview -->
-      <div id="tab-overview" class="tab-content active">
-        <div class="charts-row">
-          <div class="chart-card"><canvas id="cpuChart"></canvas></div>
-          <div class="chart-card"><canvas id="memoryChart"></canvas></div>
-        </div>
-        <div class="console-box">
-          <h4>Command Console</h4>
-          <div class="console-toolbar">
-            <select id="console-shell">
-              <option value="powershell">PowerShell</option>
-              <option value="cmd">CMD</option>
-              <option value="bash">Bash</option>
-            </select>
-            <input type="text" id="console-command" placeholder="Enter command and press Enter">
-            <button id="run-console">Run</button>
-          </div>
-          <pre id="console-output" class="output-box">Output will appear here...</pre>
-        </div>
-      </div>
-
-      <!-- Terminal -->
-      <div id="tab-terminal" class="tab-content">
-        <div id="terminal" class="terminal-box"></div>
-        <div class="terminal-input-row">
-          <span class="prompt-symbol">$</span>
-          <input type="text" id="terminal-input" placeholder="Type command and press Enter" autocomplete="off">
-        </div>
-      </div>
-
-      <!-- Remote Desktop -->
-      <div id="tab-remote" class="tab-content">
-        <p id="remote-hint" class="muted">Connecting to remote desktop...</p>
-        <img id="remote-screen" alt="Remote desktop stream">
-      </div>
-
-      <!-- Curtain -->
-      <div id="tab-curtain" class="tab-content">
-        <p class="muted">Push a full-screen overlay to the remote endpoint. The user cannot dismiss it.</p>
-        <div class="form-stack">
-          <label class="form-label">Overlay type
-            <select id="curtain-action">
-              <option value="black">Black screen</option>
-              <option value="update">Windows 10 — Working on updates</option>
-              <option value="config">Windows 10 — Configuring Windows Updates</option>
-              <option value="bsod">Blue screen of death (BSOD)</option>
-              <option value="custom">Custom image (specify path below)</option>
-              <option value="remove">Remove curtain</option>
-            </select>
-          </label>
-          <label class="form-label" id="curtain-path-label">Image path on agent
-            <input type="text" id="curtain-path" placeholder="C:\image.png">
-          </label>
-          <button id="show-curtain">Apply Curtain</button>
-        </div>
-        <pre id="curtain-output" class="output-box"></pre>
-      </div>
-
-      <!-- History -->
-      <div id="tab-history" class="tab-content">
-        <table class="data-table" id="history-table">
-          <thead>
-            <tr><th>Time</th><th>Shell</th><th>Command</th><th>Status</th><th>Exit</th><th>Output</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- ALERTS -->
-    <section id="alerts" class="page-section">
-      <div class="toolbar">
-        <select id="alert-filter">
-          <option value="0">Open alerts</option>
-          <option value="1">Dismissed</option>
-          <option value="">All</option>
-        </select>
-        <button id="refresh-alerts">Refresh</button>
-      </div>
-      <table class="data-table" id="alerts-table">
-        <thead><tr><th>Time</th><th>Device</th><th>Severity</th><th>Category</th><th>Message</th><th>Action</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- SOFTWARE -->
-    <section id="software" class="page-section">
-      <div class="toolbar">
-        <select id="software-device"><option value="">— Select a device —</option></select>
-        <button id="refresh-software">Refresh</button>
-      </div>
-      <table class="data-table" id="software-table">
-        <thead><tr><th>Device</th><th>Name</th><th>Version</th><th>Publisher</th><th>Install Date</th><th>Source</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- PATCHES -->
-    <section id="patches" class="page-section">
-      <div class="toolbar">
-        <select id="patches-device"><option value="">— Select a device —</option></select>
-        <button id="refresh-patches">Refresh</button>
-      </div>
-      <table class="data-table" id="patches-table">
-        <thead><tr><th>Device</th><th>HotFix ID</th><th>Description</th><th>Installed On</th><th>Installed By</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- SCRIPTS -->
-    <section id="scripts" class="page-section">
-      <div class="toolbar">
-        <button id="add-script">+ New Script</button>
-      </div>
-
-      <!-- Inline script editor -->
-      <div id="script-editor" class="inline-form hidden">
-        <h4 id="script-editor-title">New Script</h4>
-        <div class="form-row">
-          <label class="form-label flex-2">Name<input type="text" id="script-name" placeholder="My Script"></label>
-          <label class="form-label flex-1">Language
-            <select id="script-lang">
-              <option value="powershell">PowerShell</option>
-              <option value="cmd">Batch / CMD</option>
-              <option value="bash">Bash</option>
-              <option value="python">Python</option>
-            </select>
-          </label>
-        </div>
-        <label class="form-label">Description<input type="text" id="script-desc" placeholder="Optional description"></label>
-        <label class="form-label">Script Code<textarea id="script-code" rows="10" placeholder="Paste script here..."></textarea></label>
-        <div class="form-actions">
-          <button id="save-script" class="btn-primary">Save Script</button>
-          <button id="cancel-script" class="btn-secondary">Cancel</button>
-        </div>
-      </div>
-
-      <table class="data-table" id="scripts-table">
-        <thead><tr><th>Name</th><th>Language</th><th>Description</th><th>Run on Device</th><th>Actions</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- AUTOMATIONS -->
-    <section id="automations" class="page-section">
-      <div class="toolbar">
-        <button id="add-automation">+ New Automation</button>
-      </div>
-
-      <div id="automation-form" class="inline-form hidden">
-        <h4>New Automation</h4>
-        <div class="form-row">
-          <label class="form-label flex-2">Name<input type="text" id="auto-name" placeholder="Nightly Cleanup"></label>
-          <label class="form-label flex-2">Cron Schedule<input type="text" id="auto-schedule" placeholder="0 2 * * *"></label>
-        </div>
-        <div class="form-row">
-          <label class="form-label flex-2">Script
-            <select id="auto-script-id"><option value="">Loading scripts...</option></select>
-          </label>
-          <label class="form-label flex-2">Target Group<input type="text" id="auto-target-group" placeholder="default"></label>
-        </div>
-        <div class="form-actions">
-          <button id="save-automation" class="btn-primary">Create Automation</button>
-          <button id="cancel-automation" class="btn-secondary">Cancel</button>
-        </div>
-      </div>
-
-      <table class="data-table" id="automations-table">
-        <thead><tr><th>Name</th><th>Schedule</th><th>Script</th><th>Target Group</th><th>Enabled</th><th>Actions</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- TOOLBOX -->
-    <section id="toolbox" class="page-section">
-      <p class="muted">Run a built-in diagnostic tool on a remote agent. Output is returned directly below.</p>
-      <div class="toolbar">
-        <select id="toolbox-device"><option value="">— Select a device —</option></select>
-        <select id="toolbox-action">
-          <option value="services">List Services</option>
-          <option value="processes">Top Processes (by CPU)</option>
-          <option value="eventlog-system">System Event Log (last 20)</option>
-          <option value="eventlog-application">Application Event Log (last 20)</option>
-          <option value="registry-run">Registry Run Keys</option>
-          <option value="users">Local Users</option>
-          <option value="firewall">Firewall Status</option>
-          <option value="network">Network Adapters / IPs</option>
-          <option value="disk">Disk Usage</option>
-        </select>
-        <button id="run-toolbox">Run</button>
-      </div>
-      <pre id="toolbox-output" class="output-box">Select a device and tool, then click Run.</pre>
-    </section>
-
-    <!-- REPORTS -->
-    <section id="reports" class="page-section">
-      <div class="toolbar"><button id="refresh-reports">Refresh</button></div>
-      <div id="report-summary" class="stats"></div>
-      <h4>Recent Activity</h4>
-      <table class="data-table" id="report-audit-table">
-        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- AUDIT LOG -->
-    <section id="audit" class="page-section">
-      <table class="data-table" id="audit-table">
-        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- USERS -->
-    <section id="users" class="page-section">
-      <div class="toolbar">
-        <button id="add-user">+ Add User</button>
-      </div>
-
-      <div id="user-form" class="inline-form hidden">
-        <h4>New User</h4>
-        <div class="form-row">
-          <label class="form-label flex-1">Username<input type="text" id="user-username" placeholder="jsmith" autocomplete="off"></label>
-          <label class="form-label flex-1">Password<input type="password" id="user-password" placeholder="••••••••" autocomplete="new-password"></label>
-          <label class="form-label flex-1">Email<input type="email" id="user-email" placeholder="j@example.com"></label>
-        </div>
-        <label class="form-label checkbox-label">
-          <input type="checkbox" id="user-is-admin">
-          <span>Administrator</span>
-        </label>
-        <div class="form-actions">
-          <button id="save-user" class="btn-primary">Create User</button>
-          <button id="cancel-user" class="btn-secondary">Cancel</button>
-        </div>
-      </div>
-
-      <table class="data-table" id="users-table">
-        <thead><tr><th>Username</th><th>Email</th><th>Admin</th><th>Actions</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <!-- SETTINGS -->
-    <section id="settings" class="page-section">
-      <h4>Alert Thresholds</h4>
-      <p class="muted">Devices exceeding these percentages will trigger an alert.</p>
-      <div class="form-row">
-        <label class="form-label">CPU %<input type="number" id="setting-cpu" value="90" min="1" max="100"></label>
-        <label class="form-label">Memory %<input type="number" id="setting-memory" value="90" min="1" max="100"></label>
-        <label class="form-label">Disk %<input type="number" id="setting-disk" value="90" min="1" max="100"></label>
-      </div>
-      <button id="save-settings" class="btn-primary">Save Thresholds</button>
-      <h4 style="margin-top:32px;">Configuration</h4>
-      <div class="config-grid">
-        <div class="config-row"><span class="muted">Agent Token</span><code id="setting-agent-token"></code></div>
-        <div class="config-row"><span class="muted">Server URL</span><code id="setting-server-url"></code></div>
-      </div>
-    </section>
-
-  </main>
-</div>
-
-<!-- Connect Modal -->
-<div id="connect-modal" class="modal hidden">
-  <div class="modal-content">
-    <h3>Connect to <span id="connect-hostname"></span></h3>
-    <label class="form-label">Connection type
-      <select id="connect-type">
-        <option value="terminal">Live Terminal</option>
-        <option value="remote">Remote Desktop (HNVNC)</option>
-      </select>
-    </label>
-    <label class="form-label">Curtain overlay (optional)
-      <select id="connect-curtain">
-        <option value="">None</option>
-        <option value="black">Black screen</option>
-        <option value="update">Windows Update screen</option>
-        <option value="config">Configuring Windows Updates</option>
-        <option value="bsod">BSOD</option>
-        <option value="custom">Custom image...</option>
-        <option value="remove">Remove curtain</option>
-      </select>
-    </label>
-    <label class="form-label" id="modal-curtain-path-label" style="display:none;">Image path on agent
-      <input type="text" id="connect-curtain-path" placeholder="C:\image.png">
-    </label>
-    <div class="modal-actions">
-      <button id="connect-go" class="btn-primary">Connect</button>
-      <button id="connect-curtain-only" class="btn-secondary">Apply Curtain Only</button>
-      <button id="connect-cancel" class="btn-secondary">Cancel</button>
-    </div>
+    <main class="page-content" id="page-content"></main>
   </div>
 </div>
 
-<script src="app.js?v=3"></script>
+<div id="toast-container"></div>
+<div id="modal-overlay" class="modal-overlay hidden"><div id="modal-box" class="modal-box"></div></div>
+
+<script src="app.js?v=4"></script>
 </body>
 </html>
