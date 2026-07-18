@@ -19,7 +19,8 @@ if (Test-Path $ConfigFile) {
 }
 
 # ── C# helpers (screen capture + input simulation) ────────────────────────────
-Add-Type -ReferencedAssemblies 'System.Drawing','System.Windows.Forms' -TypeDefinition @'
+# Wrap in try/catch — these fail gracefully if no display (e.g. Server Core)
+try { Add-Type -ReferencedAssemblies 'System.Drawing','System.Windows.Forms' -TypeDefinition @'
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -99,7 +100,7 @@ public class RmmInput {
     }
     [DllImport("user32.dll")] static extern short VkKeyScan(char c);
 }
-'@ 2>$null
+'@ 2>$null } catch { Write-Host "Screen/input helpers unavailable (headless)" }
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 function Get-Metrics {
@@ -244,10 +245,13 @@ function Start-WsConnection {
         while ($true) {
             if ($script:RemoteActive -and $script:WsConnected) {
                 try {
-                    $b64 = [RmmScreen]::Grab(1280, 720)
-                    $frame = @{type='frame'; data=$b64; w=[RmmScreen]::W; h=[RmmScreen]::H; device_id=$script:DeviceId; session_id=$script:SessionId} | ConvertTo-Json -Compress
-                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($frame)
-                    $ws.SendAsync([ArraySegment[byte]]$bytes, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+                    $hasScreen = [bool](Get-Command -Name 'RmmScreen' -ErrorAction SilentlyContinue) -or ([System.AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType('RmmScreen') } | Where-Object { $_ })
+                    if ($hasScreen) {
+                        $b64   = [RmmScreen]::Grab(1280, 720)
+                        $frame = @{type='frame';data=$b64;w=[RmmScreen]::W;h=[RmmScreen]::H;device_id=$script:DeviceId;session_id=$script:SessionId} | ConvertTo-Json -Compress
+                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($frame)
+                        $ws.SendAsync([ArraySegment[byte]]$bytes,[System.Net.WebSockets.WebSocketMessageType]::Text,$true,[System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+                    }
                 } catch {}
                 [System.Threading.Thread]::Sleep(100)
             } else {

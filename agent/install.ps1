@@ -43,30 +43,42 @@ Write-Host "[3/3] Registering startup task..." -ForegroundColor Cyan
 
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-$action    = New-ScheduledTaskAction `
-                -Execute  "powershell.exe" `
-                -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\launch.ps1`""
-$trigger   = New-ScheduledTaskTrigger -AtStartup
-$settings  = New-ScheduledTaskSettingsSet `
-                -ExecutionTimeLimit 0 `
-                -RestartCount 10 `
-                -RestartInterval (New-TimeSpan -Minutes 1) `
-                -StartWhenAvailable
-$principal = New-ScheduledTaskPrincipal `
-                -UserId "SYSTEM" `
-                -LogonType ServiceAccount `
-                -RunLevel Highest
+$action   = New-ScheduledTaskAction `
+               -Execute  "powershell.exe" `
+               -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\launch.ps1`""
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+# Two triggers: at startup AND when any user logs on (covers both cases)
+$triggers = @(
+    New-ScheduledTaskTrigger -AtStartup,
+    New-ScheduledTaskTrigger -AtLogOn
+)
+
+$settings = New-ScheduledTaskSettingsSet `
+               -ExecutionTimeLimit 0 `
+               -RestartCount 10 `
+               -RestartInterval (New-TimeSpan -Minutes 1) `
+               -StartWhenAvailable `
+               -MultipleInstances IgnoreNew
+
+# Run as SYSTEM with highest privileges — works headless for heartbeat/commands
+# Screen capture (HVNC) works when a user session exists
+$principal = New-ScheduledTaskPrincipal `
+               -UserId    "SYSTEM" `
+               -LogonType ServiceAccount `
+               -RunLevel  Highest
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
     -Settings $settings -Principal $principal -Force | Out-Null
 
+# Start it right now without waiting for reboot
 Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 5
 
 $state = (Get-ScheduledTask -TaskName $TaskName).State
+$lastRun = (Get-ScheduledTaskInfo -TaskName $TaskName).LastRunTime
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  INSTALLED!  Task: $state"  -ForegroundColor Green
+Write-Host "  INSTALLED!  Task: $state  Last run: $lastRun" -ForegroundColor Green
 Write-Host "  Device appears in dashboard in ~30s."   -ForegroundColor Yellow
 Write-Host "==========================================" -ForegroundColor Cyan
