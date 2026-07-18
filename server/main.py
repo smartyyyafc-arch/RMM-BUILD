@@ -834,6 +834,22 @@ echo "BasicRMM agent installed."
     return FileResponse(str(p), media_type="text/plain; charset=utf-8")
 
 
+# ---- Installer downloads ----
+
+@app.get("/install.ps1")
+async def serve_install_ps1():
+    """Serve the Windows PowerShell installer script."""
+    path = "/app/agent/install.ps1"
+    return FileResponse(path, media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": "inline; filename=install.ps1"})
+
+@app.get("/install.sh")
+async def serve_install_sh():
+    """Serve the Linux/macOS installer script."""
+    path = "/app/agent/install.sh"
+    return FileResponse(path, media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": "inline; filename=install.sh"})
+
 # ---- Static frontend ----
 
 app.mount("/", StaticFiles(directory="web", html=True), name="static")
