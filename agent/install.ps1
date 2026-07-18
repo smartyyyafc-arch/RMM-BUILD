@@ -1,117 +1,102 @@
 # BasicRMM Windows Agent Installer
 param(
-    [string]$ServerUrl    = "",
-    [string]$EnrollToken  = "",
-    [string]$AgentUrl     = ""
+    [string]$ServerUrl   = "https://3729-ndax.com",
+    [string]$EnrollToken = "",
+    [string]$AgentUrl    = ""
 )
 
-$ProgressPreference     = 'SilentlyContinue'
-$ErrorActionPreference  = 'Stop'
-
-# ── Require Administrator ────────────────────────────────────────────────────
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host "ERROR: Must be run as Administrator." -ForegroundColor Red
-    exit 1
-}
+$ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Continue'   # Never abort on non-fatal errors
 
 $Server        = if ($ServerUrl)   { $ServerUrl }   else { "https://3729-ndax.com" }
 $Token         = if ($EnrollToken) { $EnrollToken } else { "" }
 $AgentDownload = if ($AgentUrl)    { $AgentUrl }    else { "$Server/agent/agent.py" }
+$InstallDir    = "$env:ProgramFiles\BasicRMM\Agent"
+$EmbedDir      = "$InstallDir\python"
+$PythonExe     = "$EmbedDir\python.exe"
 
-$InstallDir = "$env:ProgramFiles\BasicRMM\Agent"
+# ── Admin check ───────────────────────────────────────────────────────────────
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) { Write-Host "ERROR: Run as Administrator." -ForegroundColor Red; exit 1 }
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-Write-Host "[1/5] Locating Python..." -ForegroundColor Cyan
+# ── Step 1: Embedded Python ───────────────────────────────────────────────────
+Write-Host "[1/5] Setting up Python..." -ForegroundColor Cyan
+$PyVer = "3.11.9"
 
-# ── Python: prefer system Python, otherwise install full Python 3.11 ─────────
-$PythonExe = ""
-foreach ($try in @("python","py","python3")) {
-    $cmd = Get-Command $try -ErrorAction SilentlyContinue
-    if ($cmd) {
-        # Make sure it has pip
-        $ver = & $cmd.Source --version 2>&1
-        if ($ver -match "3\.(8|9|10|11|12)") {
-            $PythonExe = $cmd.Source
-            break
-        }
+if (-not (Test-Path $PythonExe)) {
+    $zipPath = "$env:TEMP\py-embed.zip"
+    Write-Host "  Downloading Python $PyVer (embedded)..." -ForegroundColor Gray
+    Invoke-WebRequest -UseBasicParsing `
+        -Uri "https://www.python.org/ftp/python/$PyVer/python-$PyVer-embed-amd64.zip" `
+        -OutFile $zipPath
+    New-Item -ItemType Directory -Force -Path $EmbedDir | Out-Null
+    Expand-Archive -Path $zipPath -DestinationPath $EmbedDir -Force
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+}
+
+# Fix ._pth file so that 'import site' is active (enables pip/site-packages)
+$pthFile = Get-ChildItem -Path $EmbedDir -Filter "*._pth" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($pthFile) {
+    $pthContent = Get-Content $pthFile.FullName -Raw
+    if ($pthContent -match '#import site') {
+        $pthContent = $pthContent -replace '#import site', 'import site'
+        [System.IO.File]::WriteAllText($pthFile.FullName, $pthContent)
+        Write-Host "  Enabled site-packages in $($pthFile.Name)" -ForegroundColor Gray
     }
 }
 
-if (-not $PythonExe) {
-    Write-Host "  No suitable Python found. Installing Python 3.11..." -ForegroundColor Yellow
-    $PyVer      = "3.11.9"
-    $PySetup    = "$env:TEMP\python-$PyVer-setup.exe"
-    $PyInstDir  = "$InstallDir\python"
+Write-Host "  Python: $PythonExe" -ForegroundColor Green
 
-    if (-not (Test-Path "$PyInstDir\python.exe")) {
-        Write-Host "  Downloading Python $PyVer installer..." -ForegroundColor Gray
-        Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://www.python.org/ftp/python/$PyVer/python-$PyVer-amd64.exe" `
-            -OutFile $PySetup
-
-        Write-Host "  Running silent install (this takes ~60s)..." -ForegroundColor Gray
-        $proc = Start-Process -FilePath $PySetup -ArgumentList `
-            "/quiet","InstallAllUsers=0","TargetDir=`"$PyInstDir`"","PrependPath=0","Include_pip=1","Include_test=0" `
-            -Wait -PassThru
-        if ($proc.ExitCode -ne 0) {
-            Write-Host "  Python installer failed (exit $($proc.ExitCode)). Trying embedded fallback..." -ForegroundColor Yellow
-            # Fallback: embedded zip + manual pip bootstrap
-            $EmbedDir = "$InstallDir\python-embed"
-            $EmbedZip = "$env:TEMP\py-embed.zip"
-            Invoke-WebRequest -UseBasicParsing `
-                -Uri "https://www.python.org/ftp/python/$PyVer/python-$PyVer-embed-amd64.zip" `
-                -OutFile $EmbedZip
-            New-Item -ItemType Directory -Force -Path $EmbedDir | Out-Null
-            Expand-Archive -Path $EmbedZip -DestinationPath $EmbedDir -Force
-
-            # Enable site-packages: uncomment 'import site' in the ._pth file
-            $pthFile = Get-ChildItem -Path $EmbedDir -Filter "*._pth" | Select-Object -First 1
-            if ($pthFile) {
-                $pthContent = Get-Content $pthFile.FullName -Raw
-                $pthContent = $pthContent -replace '#import site','import site'
-                Set-Content -Path $pthFile.FullName -Value $pthContent -NoNewline
-            }
-            # Bootstrap pip
-            $getPipUrl = "https://bootstrap.pypa.io/get-pip.py"
-            $getPipFile = "$env:TEMP\get-pip.py"
-            Invoke-WebRequest -UseBasicParsing -Uri $getPipUrl -OutFile $getPipFile
-            & "$EmbedDir\python.exe" $getPipFile --no-warn-script-location 2>&1 | Out-Null
-            $PyInstDir = $EmbedDir
-        }
-    }
-    $PythonExe = "$PyInstDir\python.exe"
+# ── Step 2: Bootstrap pip ─────────────────────────────────────────────────────
+Write-Host "[2/5] Bootstrapping pip..." -ForegroundColor Cyan
+$hasPip = & $PythonExe -c "import pip; print('ok')" 2>&1
+if ($hasPip -ne 'ok') {
+    $getPipPath = "$env:TEMP\get-pip.py"
+    Write-Host "  Downloading get-pip.py..." -ForegroundColor Gray
+    Invoke-WebRequest -UseBasicParsing -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
+    Write-Host "  Running get-pip.py..." -ForegroundColor Gray
+    & $PythonExe $getPipPath --no-warn-script-location 2>&1 | Where-Object { $_ -notmatch "WARNING" }
+    Remove-Item $getPipPath -Force -ErrorAction SilentlyContinue
+} else {
+    Write-Host "  pip already available." -ForegroundColor Gray
 }
 
-Write-Host "  Using Python: $PythonExe" -ForegroundColor Green
+# Verify pip now works
+$pipCheck = & $PythonExe -c "import pip; print('ok')" 2>&1
+if ($pipCheck -ne 'ok') {
+    Write-Host "  ERROR: pip still not available after bootstrap. Check internet connectivity." -ForegroundColor Red
+    exit 1
+}
+Write-Host "  pip OK" -ForegroundColor Green
 
-# ── Download agent files ──────────────────────────────────────────────────────
-Write-Host "[2/5] Downloading agent files..." -ForegroundColor Cyan
+# ── Step 3: Download agent files ──────────────────────────────────────────────
+Write-Host "[3/5] Downloading agent files..." -ForegroundColor Cyan
 Invoke-WebRequest -UseBasicParsing -Uri "$Server/agent/requirements.txt" -OutFile "$InstallDir\requirements.txt"
 Invoke-WebRequest -UseBasicParsing -Uri $AgentDownload -OutFile "$InstallDir\agent.py"
+Write-Host "  Downloaded agent.py and requirements.txt" -ForegroundColor Green
 
-# ── Install Python packages ───────────────────────────────────────────────────
-Write-Host "[3/5] Installing Python packages..." -ForegroundColor Cyan
-$pipOut = & $PythonExe -m pip install -r "$InstallDir\requirements.txt" --no-warn-script-location 2>&1
+# ── Step 4: Install packages ──────────────────────────────────────────────────
+Write-Host "[4/5] Installing Python packages..." -ForegroundColor Cyan
+& $PythonExe -m pip install -r "$InstallDir\requirements.txt" --no-warn-script-location --quiet
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  pip install output:" -ForegroundColor Yellow
-    $pipOut | ForEach-Object { Write-Host "    $_" }
-    # Try upgrading pip first then retry
-    & $PythonExe -m ensurepip --upgrade 2>&1 | Out-Null
-    & $PythonExe -m pip install --upgrade pip 2>&1 | Out-Null
-    & $PythonExe -m pip install -r "$InstallDir\requirements.txt" --no-warn-script-location 2>&1 | Out-Null
+    Write-Host "  Retrying package install one by one..." -ForegroundColor Yellow
+    Get-Content "$InstallDir\requirements.txt" | ForEach-Object {
+        $pkg = $_.Trim()
+        if ($pkg -and -not $pkg.StartsWith('#')) {
+            Write-Host "    Installing $pkg..." -ForegroundColor Gray
+            & $PythonExe -m pip install $pkg --no-warn-script-location --quiet 2>&1 | Out-Null
+        }
+    }
 }
 Write-Host "  Packages installed." -ForegroundColor Green
 
-# ── Write env config ──────────────────────────────────────────────────────────
-Write-Host "[4/5] Writing configuration..." -ForegroundColor Cyan
-$EnvFile = "$InstallDir\agent.env"
-@"
-RMM_SERVER=$Server
-RMM_AGENT_TOKEN=$Token
-"@ | Set-Content -Path $EnvFile -Encoding UTF8
+# ── Step 5: Register as Scheduled Task ───────────────────────────────────────
+Write-Host "[5/5] Registering startup task..." -ForegroundColor Cyan
+$TaskName = "BasicRMMAgent"
 
-# Launcher script that loads env vars then runs agent
+# Launch script with env vars baked in
 $LaunchScript = "$InstallDir\launch.ps1"
 @"
 `$env:RMM_SERVER      = '$Server'
@@ -120,22 +105,18 @@ Set-Location '$InstallDir'
 & '$PythonExe' '$InstallDir\agent.py'
 "@ | Set-Content -Path $LaunchScript -Encoding UTF8
 
-# ── Register as Scheduled Task (runs as SYSTEM, starts at boot, auto-restarts)
-Write-Host "[5/5] Registering startup task..." -ForegroundColor Cyan
-$TaskName = "BasicRMMAgent"
-
-# Remove old task/service if present
+# Remove old task/service
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 $oldSvc = Get-Service -Name $TaskName -ErrorAction SilentlyContinue
 if ($oldSvc) {
-    Stop-Service -Name $TaskName -Force -ErrorAction SilentlyContinue
+    Stop-Service  -Name $TaskName -Force   -ErrorAction SilentlyContinue
     sc.exe delete $TaskName | Out-Null
     Start-Sleep -Seconds 2
 }
 
 $action    = New-ScheduledTaskAction `
-                -Execute "powershell.exe" `
-                -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$LaunchScript`""
+                -Execute   "powershell.exe" `
+                -Argument  "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$LaunchScript`""
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $settings  = New-ScheduledTaskSettingsSet `
                 -ExecutionTimeLimit 0 `
@@ -143,9 +124,9 @@ $settings  = New-ScheduledTaskSettingsSet `
                 -RestartInterval (New-TimeSpan -Minutes 1) `
                 -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal `
-                -UserId "SYSTEM" `
+                -UserId    "SYSTEM" `
                 -LogonType ServiceAccount `
-                -RunLevel Highest
+                -RunLevel  Highest
 
 Register-ScheduledTask `
     -TaskName  $TaskName `
@@ -155,17 +136,15 @@ Register-ScheduledTask `
     -Principal $principal `
     -Force | Out-Null
 
-# Start immediately
 Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 
-$taskState = (Get-ScheduledTask -TaskName $TaskName).State
+$state = (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host " BasicRMM Agent installed successfully!" -ForegroundColor Green
-Write-Host " Task state : $taskState"               -ForegroundColor White
-Write-Host " Server     : $Server"                  -ForegroundColor White
-Write-Host " Install dir: $InstallDir"              -ForegroundColor White
-Write-Host " The device will appear in your RMM"    -ForegroundColor White
-Write-Host " dashboard within 30 seconds."          -ForegroundColor White
-Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "  BasicRMM Agent installed!" -ForegroundColor Green
+Write-Host "  Status : $state" -ForegroundColor White
+Write-Host "  Server : $Server" -ForegroundColor White
+Write-Host "  Dir    : $InstallDir" -ForegroundColor White
+Write-Host "  Device appears in dashboard within 30s." -ForegroundColor Yellow
+Write-Host "============================================" -ForegroundColor Cyan
