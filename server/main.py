@@ -789,6 +789,51 @@ def delete_user(user_id: int, db: Session = Depends(get_db), current: User = Dep
     return {"ok": True}
 
 
+# ---- Installer downloads ----
+
+@app.get("/install.ps1")
+async def serve_install_ps1(token: str = ""):
+    from fastapi.responses import FileResponse
+    return FileResponse("/app/agent/install.ps1", media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": "inline; filename=install.ps1"})
+
+@app.get("/install.sh")
+async def serve_install_sh(token: str = ""):
+    from fastapi.responses import FileResponse
+    import pathlib
+    p = pathlib.Path("/app/agent/install.sh")
+    if not p.exists():
+        from fastapi.responses import PlainTextResponse
+        sh = f"""#!/usr/bin/env bash
+set -euo pipefail
+SERVER_URL="${{1:-$RMM_SERVER}}"
+AGENT_TOKEN="${{2:-$RMM_AGENT_TOKEN}}"
+INSTALL_DIR="/opt/basicrmm"
+mkdir -p "$INSTALL_DIR"
+curl -fsSL "$SERVER_URL/agent/agent.py" -o "$INSTALL_DIR/agent.py"
+curl -fsSL "$SERVER_URL/agent/requirements.txt" -o "$INSTALL_DIR/requirements.txt"
+pip3 install -q -r "$INSTALL_DIR/requirements.txt"
+cat > /etc/systemd/system/basicrmm-agent.service <<EOF
+[Unit]
+Description=BasicRMM Agent
+After=network.target
+[Service]
+ExecStart=/usr/bin/python3 $INSTALL_DIR/agent.py
+Environment=RMM_SERVER=$SERVER_URL
+Environment=RMM_AGENT_TOKEN=$AGENT_TOKEN
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now basicrmm-agent
+echo "BasicRMM agent installed."
+"""
+        return PlainTextResponse(sh, media_type="text/plain")
+    return FileResponse(str(p), media_type="text/plain; charset=utf-8")
+
+
 # ---- Static frontend ----
 
 app.mount("/", StaticFiles(directory="web", html=True), name="static")

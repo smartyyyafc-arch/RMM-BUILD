@@ -252,105 +252,128 @@ async function updateAlertBadge() {
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 
+function buildInstallCmds() {
+  const su = serverUrl || window.location.origin;
+  const tk = agentToken || '';
+  return {
+    ps1:      `$ServerUrl="${su}"; $EnrollToken="${tk}"; $AgentUrl="${su}/agent/agent.py"; Invoke-WebRequest -UseBasicParsing -Uri "${su}/install.ps1?token=${tk}" -OutFile "$env:TEMP\\rmm-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\rmm-install.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`,
+    batch:    `@echo off\nset ServerUrl=${su}\nset EnrollToken=${tk}\nset AgentUrl=${su}/agent/agent.py\npowershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri '${su}/install.ps1?token=${tk}' -OutFile '$env:TEMP\\rmm-install.ps1'; & '$env:TEMP\\rmm-install.ps1' -ServerUrl '${su}' -EnrollToken '${tk}' -AgentUrl '${su}/agent/agent.py'"`,
+    linux:    `curl -fsSL "${su}/install.sh?token=${tk}" | sudo bash -s -- --url "${su}" --token "${tk}"`,
+    vbscript: `Set oShell = CreateObject("WScript.Shell")\nDim ps : ps = "powershell -NoProfile -ExecutionPolicy Bypass -Command ""Invoke-WebRequest -UseBasicParsing -Uri '${su}/install.ps1?token=${tk}' -OutFile '$env:TEMP\\rmm.ps1'; & '$env:TEMP\\rmm.ps1' -ServerUrl '${su}' -EnrollToken '${tk}' -AgentUrl '${su}/agent/agent.py'"""\noShell.Run ps, 0, False`
+  };
+}
+
+function patchDashStats(d) {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('ds-total',     d.total);
+  set('ds-online',    d.online);
+  set('ds-offline',   d.offline);
+  set('ds-attention', d.needs_attention);
+  set('ds-healthy',   (d.healthy_pct || 0) + '%');
+  const li = document.getElementById('pie-leg-online');   if (li) li.textContent = `Online (${d.online})`;
+  const lo = document.getElementById('pie-leg-offline');  if (lo) lo.textContent = `Offline (${d.offline})`;
+  const la = document.getElementById('pie-leg-attention');if (la) la.textContent = `Attention (${d.needs_attention})`;
+  drawPie(d);
+  drawPlatformBars(d.by_platform || {});
+}
+
 async function renderDashboard() {
   const el = document.getElementById('page-content');
-  el.innerHTML = `<div class="empty-state"><p>Loading…</p></div>`;
+  // Only do a full render if page isn't already showing the dashboard
+  if (!document.getElementById('ds-total')) {
+    el.innerHTML = `<div class="empty-state"><p>Loading…</p></div>`;
+  }
+
   let data;
   try { data = await api('GET', '/dashboard'); } catch(e) {
     el.innerHTML = `<div class="empty-state"><p>Failed to load dashboard</p></div>`; return;
   }
 
-  const installCmds = {
-    ps1: `# PowerShell Installer\n$url = "${serverUrl}"\n$token = "${agentToken}"\nInvoke-WebRequest -Uri "$url/agent/install.ps1" -OutFile install.ps1\n& .\\install.ps1 -Url $url -Token $token`,
-    batch: `@echo off\nset URL=${serverUrl}\nset TOKEN=${agentToken}\npowershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri '%URL%/agent/install.ps1' -OutFile install.ps1; .\\install.ps1 -Url '%URL%' -Token '%TOKEN%'"`,
-    vbscript: `Set oShell = CreateObject("WScript.Shell")\noShell.Run "powershell -ExecutionPolicy Bypass -Command ""Invoke-WebRequest -Uri '${serverUrl}/agent/install.ps1' -OutFile install.ps1; .\\install.ps1 -Url '${serverUrl}' -Token '${agentToken}'"" ", 0, False`,
-    setup: `# Linux/macOS\ncurl -fsSL ${serverUrl}/agent/install.sh | sudo bash -s -- --url ${serverUrl} --token ${agentToken}`,
-    msi: `# MSI (coming soon)\nmsiexec /i BasicRMM-Agent.msi SERVER_URL=${serverUrl} AGENT_TOKEN=${agentToken} /qn`
-  };
+  // If dashboard shell already rendered, just patch numbers — no DOM flash
+  if (document.getElementById('ds-total')) {
+    patchDashStats(data);
+    return;
+  }
 
+  const cmds = buildInstallCmds();
   let activeFmt = 'ps1';
-  const healthy = data.healthy_pct || 0;
 
   el.innerHTML = `
   <div class="page-header">
     <div class="page-header-left">
       <h1>Fleet Overview</h1>
-      <p><span class="live-dot"></span> Live data · auto-refreshes every 10s</p>
+      <p><span class="live-dot"></span> Live · refreshes every 10 s</p>
     </div>
     <div class="page-header-right">
-      <label class="rdp-toggle" style="gap:7px">
-        <span style="font-size:12px;color:var(--muted)">Auto-refresh</span>
-        <label class="toggle-sw"><input type="checkbox" id="dash-autorefresh" checked><span class="toggle-slider"></span></label>
-      </label>
-      <button class="btn btn-primary btn-sm" onclick="navigate('devices')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Add Agent
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('install-card').style.display=document.getElementById('install-card').style.display==='none'?'':'none'">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Deploy Agent
       </button>
     </div>
   </div>
 
   <div class="install-card" id="install-card">
     <div class="install-card-header">
-      <span style="font-weight:600;font-size:14px">Deploy Agent</span>
-      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('install-card').style.display='none'">Hide</button>
-    </div>
-    <div class="install-steps">
-      <div class="install-step"><div class="step-num">1</div><div class="step-text">Copy the install command for your target OS</div></div>
-      <div class="install-step"><div class="step-num">2</div><div class="step-text">Run it as Administrator / root on the target machine</div></div>
-      <div class="install-step"><div class="step-num">3</div><div class="step-text">The agent will appear in the Devices list within 30 seconds</div></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:32px;height:32px;border-radius:8px;background:var(--accent);display:flex;align-items:center;justify-content:center">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <div>
+          <div style="font-weight:700;font-size:14px">Deploy New Agent</div>
+          <div style="font-size:11px;color:var(--muted)">Run the command below on the target machine as Administrator</div>
+        </div>
+      </div>
+      <button class="icon-btn" onclick="document.getElementById('install-card').style.display='none'" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     </div>
     <div class="format-tabs" id="fmt-tabs">
-      ${['ps1','batch','vbscript','setup','msi'].map(f => `<button class="fmt-tab${f===activeFmt?' active':''}" data-fmt="${f}">${f.toUpperCase()}</button>`).join('')}
+      ${[['ps1','PowerShell'],['batch','CMD Batch'],['linux','Linux/macOS'],['vbscript','VBScript']].map(([f,label]) =>
+        `<button class="fmt-tab${f===activeFmt?' active':''}" data-fmt="${f}">${label}</button>`).join('')}
     </div>
     <div class="code-block" id="install-cmd-block">
-      <pre id="install-cmd-text">${esc(installCmds.ps1)}</pre>
+      <pre id="install-cmd-text" style="white-space:pre-wrap;word-break:break-all">${esc(cmds.ps1)}</pre>
       <button class="copy-btn" id="copy-install-btn">Copy</button>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:20px;font-size:11px;color:var(--muted)">
+      <span>🔑 Token: <code style="color:var(--accent)">${esc(agentToken)}</code></span>
+      <span>🌐 Server: <code style="color:var(--accent)">${esc(serverUrl||window.location.origin)}</code></span>
     </div>
   </div>
 
   <div class="stats-grid">
-    <div class="stat-card">
-      <div class="stat-icon" style="background:rgba(59,130,246,.15)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 20h8M12 18v2"/></svg>
-      </div>
+    <div class="stat-card stat-card-blue">
+      <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 20h8M12 18v2"/></svg></div>
       <div class="stat-body">
-        <div class="stat-value">${data.total}</div>
+        <div class="stat-value" id="ds-total">${data.total}</div>
         <div class="stat-label">Total Devices</div>
       </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-icon" style="background:rgba(34,197,94,.15)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      </div>
+    <div class="stat-card stat-card-green">
+      <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
       <div class="stat-body">
-        <div class="stat-value text-success">${data.online}</div>
+        <div class="stat-value" id="ds-online">${data.online}</div>
         <div class="stat-label">Online</div>
       </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-icon" style="background:rgba(239,68,68,.15)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-      </div>
+    <div class="stat-card stat-card-red">
+      <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
       <div class="stat-body">
-        <div class="stat-value text-danger">${data.offline}</div>
+        <div class="stat-value" id="ds-offline">${data.offline}</div>
         <div class="stat-label">Offline</div>
       </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-icon" style="background:rgba(245,158,11,.15)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-      </div>
+    <div class="stat-card stat-card-yellow">
+      <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
       <div class="stat-body">
-        <div class="stat-value text-warning">${data.needs_attention}</div>
+        <div class="stat-value" id="ds-attention">${data.needs_attention}</div>
         <div class="stat-label">Needs Attention</div>
       </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-icon" style="background:rgba(34,197,94,.1)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-      </div>
+    <div class="stat-card stat-card-green">
+      <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
       <div class="stat-body">
-        <div class="stat-value text-success">${healthy}%</div>
+        <div class="stat-value" id="ds-healthy">${data.healthy_pct || 0}%</div>
         <div class="stat-label">Fleet Healthy</div>
       </div>
     </div>
@@ -362,9 +385,9 @@ async function renderDashboard() {
       <div class="pie-wrap">
         <svg id="pie-chart" viewBox="0 0 100 100" width="110" height="110"></svg>
         <div class="pie-legend">
-          <div class="pie-leg-item"><div class="pie-leg-dot" style="background:var(--success)"></div><span>Online (${data.online})</span></div>
-          <div class="pie-leg-item"><div class="pie-leg-dot" style="background:var(--danger)"></div><span>Offline (${data.offline})</span></div>
-          <div class="pie-leg-item"><div class="pie-leg-dot" style="background:var(--warning)"></div><span>Attention (${data.needs_attention})</span></div>
+          <div class="pie-leg-item"><div class="pie-leg-dot" style="background:var(--success)"></div><span id="pie-leg-online">Online (${data.online})</span></div>
+          <div class="pie-leg-item"><div class="pie-leg-dot" style="background:var(--danger)"></div><span id="pie-leg-offline">Offline (${data.offline})</span></div>
+          <div class="pie-leg-item"><div class="pie-leg-dot" style="background:var(--warning)"></div><span id="pie-leg-attention">Attention (${data.needs_attention})</span></div>
         </div>
       </div>
     </div>
@@ -374,33 +397,25 @@ async function renderDashboard() {
     </div>
   </div>`;
 
-  // Draw pie
   drawPie(data);
-  // Draw bars
   drawPlatformBars(data.by_platform || {});
 
-  // Format tabs
   document.getElementById('fmt-tabs').addEventListener('click', e => {
     const btn = e.target.closest('.fmt-tab');
     if (!btn) return;
     activeFmt = btn.dataset.fmt;
     document.querySelectorAll('.fmt-tab').forEach(b => b.classList.toggle('active', b.dataset.fmt === activeFmt));
-    document.getElementById('install-cmd-text').textContent = installCmds[activeFmt];
+    document.getElementById('install-cmd-text').textContent = cmds[activeFmt];
   });
 
   document.getElementById('copy-install-btn').addEventListener('click', function() {
-    copyText(installCmds[activeFmt], this);
+    copyText(cmds[activeFmt], this);
   });
 
-  // Auto-refresh
-  const ar = document.getElementById('dash-autorefresh');
-  if (ar.checked) {
-    pollTimer = setInterval(renderDashboard, 10000);
-  }
-  ar.addEventListener('change', () => {
-    clearInterval(pollTimer);
-    if (ar.checked) pollTimer = setInterval(renderDashboard, 10000);
-  });
+  // Refresh only patches numbers — no re-render, no flash
+  pollTimer = setInterval(async () => {
+    try { patchDashStats(await api('GET', '/dashboard')); } catch(e) {}
+  }, 10000);
 }
 
 function drawPie(data) {

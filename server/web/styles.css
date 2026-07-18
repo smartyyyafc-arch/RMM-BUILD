@@ -257,7 +257,7 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
 /* ── STAT CARDS ── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
   gap: 12px;
   margin-bottom: 20px;
 }
@@ -265,18 +265,39 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 16px;
-  display: flex; align-items: center; gap: 12px;
+  padding: 16px 16px 16px 18px;
+  display: flex; align-items: center; gap: 14px;
+  position: relative;
+  overflow: hidden;
+  transition: transform .12s, box-shadow .12s;
 }
+.stat-card:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,.3); }
+.stat-card::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+}
+.stat-card-blue::before  { background: #3b82f6; }
+.stat-card-green::before { background: #22c55e; }
+.stat-card-red::before   { background: #ef4444; }
+.stat-card-yellow::before{ background: #f59e0b; }
 .stat-icon {
-  width: 40px; height: 40px; border-radius: 8px;
+  width: 38px; height: 38px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
-.stat-icon svg { width: 20px; height: 20px; }
-.stat-body {}
-.stat-value { font-size: 24px; font-weight: 700; line-height: 1; }
-.stat-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.stat-card-blue  .stat-icon { background: rgba(59,130,246,.15); color: #60a5fa; }
+.stat-card-green .stat-icon { background: rgba(34,197,94,.15);  color: #4ade80; }
+.stat-card-red   .stat-icon { background: rgba(239,68,68,.15);  color: #f87171; }
+.stat-card-yellow .stat-icon{ background: rgba(245,158,11,.15); color: #fbbf24; }
+.stat-icon svg { width: 18px; height: 18px; }
+.stat-value { font-size: 26px; font-weight: 800; line-height: 1; letter-spacing: -.5px; }
+.stat-card-blue  .stat-value { color: #fff; }
+.stat-card-green .stat-value { color: #4ade80; }
+.stat-card-red   .stat-value { color: #f87171; }
+.stat-card-yellow .stat-value{ color: #fbbf24; }
+.stat-label { font-size: 11px; color: var(--muted); margin-top: 3px; font-weight: 500; }
 
 /* ── CHARTS ROW ── */
 .charts-row {
@@ -302,18 +323,18 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
 .bar-count { width: 30px; text-align: right; font-size: 11px; color: var(--muted); }
 
 /* ── INSTALL CARD ── */
-.install-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 20px; }
-.install-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.install-steps { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-.install-step { display: flex; align-items: flex-start; gap: 12px; }
-.step-num {
-  width: 22px; height: 22px; border-radius: 50%;
-  background: var(--accent); color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700;
-  flex-shrink: 0;
+.install-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--accent);
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 20px;
 }
-.step-text { font-size: 12px; color: var(--muted); padding-top: 2px; }
+.install-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
 .format-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 .fmt-tab {
   padding: 4px 12px; border-radius: 5px;
