@@ -723,6 +723,37 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: monosp
   margin: 1px;
 }
 
+/* Curtain tiles */
+.curtain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+.curtain-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 8px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+  font-size: 11px;
+  color: var(--text);
+}
+.curtain-tile:hover { border-color: var(--accent); background: rgba(59,130,246,.07); }
+.curtain-tile-remove:hover { border-color: var(--danger); background: rgba(239,68,68,.07); }
+.curtain-tile-preview {
+  width: 72px;
+  height: 48px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.08);
+  flex-shrink: 0;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

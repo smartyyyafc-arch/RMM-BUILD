@@ -307,8 +307,14 @@ root.mainloop()
                 self.start_remote_stream(session_id, msg.get("device_id"))
             elif mtype == "remote_stop":
                 self.stop_remote_stream()
-            elif mtype == "remote_input":
+            elif mtype in ("remote_input", "mouse_click", "mouse_move"):
                 self.handle_remote_input(msg)
+            elif mtype == "curtain":
+                self._handle_curtain_ws(msg)
+            elif mtype == "key":
+                self._handle_key_ws(msg)
+            elif mtype == "keepawake":
+                self._handle_keepawake_ws(msg)
         except Exception as e:
             print("WS message error:", e)
 
@@ -328,7 +334,7 @@ root.mainloop()
 
     def start_remote_stream(self, session_id, device_id=None):
         with self.remote_lock:
-            self.remote_device_id = device_id
+            self.remote_device_id = device_id  # always update so reconnects route correctly
             if self.remote_thread and self.remote_thread.is_alive():
                 return
             self.remote_active = True
@@ -380,16 +386,24 @@ root.mainloop()
     def remote_stream(self, session_id):
         while self.remote_active:
             try:
-                pil = ImageGrab.grab()
+                try:
+                    import mss as _mss
+                    with _mss.mss() as sct:
+                        monitor = sct.monitors[0]
+                        raw = sct.grab(monitor)
+                        pil = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                except Exception:
+                    pil = ImageGrab.grab()
                 pil.thumbnail((1280, 720))
+                w, h = pil.size
                 buf = io.BytesIO()
                 pil.save(buf, format="JPEG", quality=50)
                 b64 = base64.b64encode(buf.getvalue()).decode()
-                payload = {"type": "frame", "data": "data:image/jpeg;base64," + b64, "session_id": session_id}
+                payload = {"type": "frame", "data": b64, "w": w, "h": h, "session_id": session_id}
                 if self.remote_device_id:
                     payload["device_id"] = self.remote_device_id
                 self.send_ws(payload)
-                time.sleep(0.2)
+                time.sleep(0.1)
             except Exception as e:
                 print("Remote stream error:", e)
                 time.sleep(1)
@@ -398,14 +412,94 @@ root.mainloop()
         if not PYNPUT_AVAILABLE:
             return
         try:
-            if msg.get("event") == "move":
-                MouseController().position = (msg["x"], msg["y"])
-            elif msg.get("event") == "click":
-                MouseController().click(Button.left if msg["button"] == 0 else Button.right)
-            elif msg.get("event") == "key":
-                KeyboardController().type(msg["key"])
+            mtype = msg.get("type", "")
+            event = msg.get("event", mtype)  # support both old 'event' field and new 'type' field
+            mc = MouseController()
+            if event in ("move", "mouse_move"):
+                mc.position = (int(msg["x"]), int(msg["y"]))
+            elif event in ("click", "mouse_click"):
+                mc.position = (int(msg["x"]), int(msg["y"]))
+                btn = Button.left if msg.get("button") in (0, "left") else Button.right
+                mc.click(btn)
+            elif event == "scroll":
+                mc.scroll(msg.get("dx", 0), msg.get("dy", 0))
+            elif event == "key":
+                KeyboardController().type(str(msg.get("key", "")))
         except Exception as e:
             print("Remote input error:", e)
+
+    def _handle_curtain_ws(self, msg):
+        action = msg.get("action", "black")
+        # map UI names to curtain script names
+        alias = {"blank": "black", "unblank": "remove", "off": "remove"}
+        action = alias.get(action, action)
+        if action == "blanklok":
+            self.run_curtain("black")
+            threading.Thread(target=self._lock_workstation, daemon=True).start()
+        elif action == "lock":
+            self._lock_workstation()
+        elif action == "logoff":
+            self._logoff()
+        else:
+            self.run_curtain(action)
+
+    def _lock_workstation(self):
+        try:
+            if sys.platform.startswith("win"):
+                import ctypes
+                ctypes.windll.user32.LockWorkStation()
+            else:
+                subprocess.run(["loginctl", "lock-session"], timeout=5)
+        except Exception as e:
+            print("Lock error:", e)
+
+    def _logoff(self):
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.run(["logoff"], timeout=5)
+            else:
+                subprocess.run(["pkill", "-KILL", "-u", self._get_user()], timeout=5)
+        except Exception as e:
+            print("Logoff error:", e)
+
+    def _handle_key_ws(self, msg):
+        if not PYNPUT_AVAILABLE:
+            return
+        try:
+            from pynput.keyboard import Controller as KC, Key
+            keys_raw = msg.get("keys", [])
+            key_map = {
+                "ctrl": Key.ctrl, "alt": Key.alt, "del": Key.delete,
+                "tab": Key.tab, "esc": Key.esc, "enter": Key.enter,
+                "win": Key.cmd, "shift": Key.shift,
+            }
+            kc = KC()
+            mapped = [key_map.get(k.lower(), k) for k in keys_raw]
+            for k in mapped:
+                kc.press(k)
+            for k in reversed(mapped):
+                kc.release(k)
+        except Exception as e:
+            print("Key error:", e)
+
+    def _handle_keepawake_ws(self, msg):
+        try:
+            if sys.platform.startswith("win"):
+                import ctypes
+                ES_CONTINUOUS = 0x80000000
+                ES_SYSTEM_REQUIRED = 0x00000001
+                ES_DISPLAY_REQUIRED = 0x00000002
+                if msg.get("enabled"):
+                    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
+                else:
+                    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+            elif sys.platform.startswith("linux"):
+                if msg.get("enabled"):
+                    subprocess.Popen(["xset", "s", "off", "-dpms"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen(["xset", "s", "on", "+dpms"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print("Keepawake error:", e)
 
     def ws_runner(self):
         proto = "wss" if self.server.startswith("https") else "ws"
