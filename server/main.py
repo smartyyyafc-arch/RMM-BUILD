@@ -41,13 +41,17 @@ DEFAULT_THRESHOLDS = {"cpu": 90.0, "memory": 90.0, "disk": 90.0}
 
 
 def get_thresholds(db: Session):
-    try:
-        cpu = float(db.query(Setting).filter(Setting.key == "threshold_cpu").first().value or DEFAULT_THRESHOLDS["cpu"])
-        mem = float(db.query(Setting).filter(Setting.key == "threshold_memory").first().value or DEFAULT_THRESHOLDS["memory"])
-        disk = float(db.query(Setting).filter(Setting.key == "threshold_disk").first().value or DEFAULT_THRESHOLDS["disk"])
-        return {"cpu": cpu, "memory": mem, "disk": disk}
-    except Exception:
-        return DEFAULT_THRESHOLDS
+    def _get(key, default):
+        row = db.query(Setting).filter(Setting.key == key).first()
+        try:
+            return float(row.value) if row and row.value else default
+        except (TypeError, ValueError):
+            return default
+    return {
+        "cpu":    _get("threshold_cpu",    DEFAULT_THRESHOLDS["cpu"]),
+        "memory": _get("threshold_memory", DEFAULT_THRESHOLDS["memory"]),
+        "disk":   _get("threshold_disk",   DEFAULT_THRESHOLDS["disk"]),
+    }
 
 
 def upsert_alert(db: Session, device: Device, severity: str, category: str, message: str):
@@ -92,16 +96,22 @@ def check_device_alerts(db: Session, device: Device):
 async def mark_offline():
     while True:
         await asyncio.sleep(30)
-        db = SessionLocal()
         try:
-            now = datetime.now(timezone.utc).timestamp()
-            for d in db.query(Device).filter(Device.status == "online").all():
-                if d.last_seen and d.last_seen.timestamp() < now - HEARTBEAT_TIMEOUT_SECONDS:
-                    d.status = "offline"
-                    check_device_alerts(db, d)
-            db.commit()
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                now = datetime.now(timezone.utc).timestamp()
+                for d in db.query(Device).filter(Device.status == "online").all():
+                    # Never mark a device offline while its WebSocket is still open.
+                    if d.agent_id in connected_agents:
+                        continue
+                    if d.last_seen and d.last_seen.timestamp() < now - HEARTBEAT_TIMEOUT_SECONDS:
+                        d.status = "offline"
+                        check_device_alerts(db, d)
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass
 
 
 automation_last_run: dict[int, datetime] = {}
@@ -110,33 +120,36 @@ automation_last_run: dict[int, datetime] = {}
 async def run_automations():
     while True:
         await asyncio.sleep(60)
-        db = SessionLocal()
         try:
-            now = datetime.utcnow()
-            automations = db.query(Automation).filter(Automation.enabled == True).all()
-            for a in automations:
-                try:
-                    if not croniter.is_valid(a.schedule):
+            db = SessionLocal()
+            try:
+                now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC for croniter
+                automations = db.query(Automation).filter(Automation.enabled == True).all()
+                for a in automations:
+                    try:
+                        if not croniter.is_valid(a.schedule):
+                            continue
+                        prev = croniter(a.schedule, now).get_prev(datetime)
+                        last = automation_last_run.get(a.id)
+                        if last and last >= prev:
+                            continue
+                        if (now - prev).total_seconds() > 90:
+                            continue
+                        script = db.query(Script).filter(Script.id == a.script_id).first()
+                        if not script:
+                            continue
+                        devices = db.query(Device).filter(Device.group == a.target_group).all() if a.target_group else db.query(Device).all()
+                        for d in devices:
+                            db.add(Command(device_id=d.id, shell=script.language, command=script.code))
+                        log_audit(db, "system", "automation_run", f"automation={a.name} targets={len(devices)}")
+                        automation_last_run[a.id] = prev
+                    except Exception:
                         continue
-                    prev = croniter(a.schedule, now).get_prev(datetime)
-                    last = automation_last_run.get(a.id)
-                    if last and last >= prev:
-                        continue
-                    if (now - prev).total_seconds() > 90:
-                        continue
-                    script = db.query(Script).filter(Script.id == a.script_id).first()
-                    if not script:
-                        continue
-                    devices = db.query(Device).filter(Device.group == a.target_group).all() if a.target_group else db.query(Device).all()
-                    for d in devices:
-                        db.add(Command(device_id=d.id, shell=script.language, command=script.code))
-                    log_audit(db, "system", "automation_run", f"automation={a.name} targets={len(devices)}")
-                    automation_last_run[a.id] = prev
-                except Exception:
-                    continue
-            db.commit()
-        finally:
-            db.close()
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -155,6 +168,46 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="BasicRMM Server", lifespan=lifespan)
 if os.path.isdir(AGENT_FILES_DIR):
     app.mount("/agent", StaticFiles(directory=AGENT_FILES_DIR), name="agent")
+
+
+@app.get("/install.ps1")
+def serve_install_ps1(token: str = "", request: Request = None):
+    """Serve install.ps1 with server URL and token baked in as param defaults.
+
+    Enables the clean one-liner: iex ((New-Object Net.WebClient).DownloadString('URL?token=TOKEN'))
+    """
+    import re
+    script_path = os.path.join(AGENT_FILES_DIR, "install.ps1")
+    if not os.path.isfile(script_path):
+        raise HTTPException(status_code=404, detail="Installer not found")
+    with open(script_path, "r", encoding="utf-8") as f:
+        script = f.read()
+    # Prefer the configured server_url; fall back to request origin respecting X-Forwarded-Proto
+    db2 = SessionLocal()
+    try:
+        rows = db2.query(Setting).all()
+        cfg = {s.key: s.value for s in rows}
+    finally:
+        db2.close()
+    server_url = cfg.get("server_url", "").strip()
+    if not server_url:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        server_url = f"{proto}://{request.headers.get('host', request.url.netloc)}"
+    server_url = server_url.rstrip("/")
+    # Embed real server URL and token as param defaults so iex needs no extra args
+    script = re.sub(
+        r'\[string\]\$ServerUrl\s*=\s*"[^"]*"',
+        f'[string]$ServerUrl   = "{server_url}"',
+        script,
+    )
+    if token:
+        script = re.sub(
+            r'\[string\]\$EnrollToken\s*=\s*"[^"]*"',
+            f'[string]$EnrollToken = "{token}"',
+            script,
+        )
+    from fastapi.responses import Response as FResponse
+    return FResponse(content=script, media_type="text/plain; charset=utf-8")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -273,6 +326,11 @@ def heartbeat(payload: HeartbeatPayload, req: Request, db: Session = Depends(get
         Command.device_id == device.id,
         Command.status == "queued"
     ).order_by(Command.created_at.asc()).all()
+    # Advance status to "running" so the same command is never re-dispatched
+    # on a subsequent heartbeat before the agent posts its result.
+    for c in queued:
+        c.status = "running"
+    db.commit()
     return {
         "commands": [
             {"id": c.id, "shell": c.shell, "command": c.command}
@@ -283,6 +341,8 @@ def heartbeat(payload: HeartbeatPayload, req: Request, db: Session = Depends(get
 
 @app.post("/api/agent/command/{command_id}/result")
 def command_result(command_id: int, payload: dict, db: Session = Depends(get_db)):
+    if payload.get("token") != AGENT_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid agent token")
     cmd = db.query(Command).filter(Command.id == command_id).first()
     if not cmd:
         raise HTTPException(status_code=404, detail="Command not found")
@@ -307,11 +367,11 @@ def inventory(payload: dict, db: Session = Depends(get_db)):
     for sw in payload.get("software", []):
         db.add(Software(
             device_id=device.id,
-            name=sw.get("name", "")[:255],
-            version=sw.get("version", "")[:100],
-            publisher=sw.get("publisher", "")[:255],
-            install_date=sw.get("install_date", "")[:50],
-            source=sw.get("source", "")[:100]
+            name=(sw.get("name") or "")[:255],
+            version=(sw.get("version") or "")[:100],
+            publisher=(sw.get("publisher") or "")[:255],
+            install_date=(sw.get("install_date") or "")[:50],
+            source=(sw.get("source") or "")[:100]
         ))
     for p in payload.get("patches", []):
         db.add(Patch(
@@ -428,8 +488,11 @@ def dashboard(db: Session = Depends(get_db), current: User = Depends(get_current
     total = db.query(Device).count()
     online = db.query(Device).filter(Device.status == "online").count()
     offline = total - online
+    t = get_thresholds(db)
     needs_attention = db.query(Device).filter(
-        (Device.cpu_percent > 90) | (Device.memory_percent > 90) | (Device.disk_percent > 90)
+        (Device.cpu_percent > t["cpu"]) |
+        (Device.memory_percent > t["memory"]) |
+        (Device.disk_percent > t["disk"])
     ).count()
     healthy_pct = round(online / total * 100, 1) if total else 0
     by_platform = {}
@@ -466,6 +529,21 @@ def list_scripts(db: Session = Depends(get_db), current: User = Depends(get_curr
         "description": s.description,
         "created_at": s.created_at.isoformat() if s.created_at else None
     } for s in db.query(Script).order_by(Script.name).all()]
+
+
+@app.get("/api/scripts/{script_id}")
+def get_script(script_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    s = db.query(Script).filter(Script.id == script_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Script not found")
+    return {
+        "id": s.id,
+        "name": s.name,
+        "language": s.language,
+        "description": s.description,
+        "code": s.code,
+        "created_at": s.created_at.isoformat() if s.created_at else None
+    }
 
 
 @app.post("/api/scripts")
@@ -580,13 +658,15 @@ def dismiss_alert(alert_id: int, db: Session = Depends(get_db), current: User = 
 def get_settings(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     rows = db.query(Setting).all()
     settings = {s.key: s.value for s in rows}
-    return {
-        "agent_token": AGENT_TOKEN,
+    result = {
         "threshold_cpu": settings.get("threshold_cpu", "90"),
         "threshold_memory": settings.get("threshold_memory", "90"),
         "threshold_disk": settings.get("threshold_disk", "90"),
         "server_url": settings.get("server_url", "")
     }
+    if current.is_admin:
+        result["agent_token"] = AGENT_TOKEN
+    return result
 
 
 class SettingsPayload(BaseModel):
@@ -618,8 +698,11 @@ def report_summary(db: Session = Depends(get_db), current: User = Depends(get_cu
     total = db.query(Device).count()
     online = db.query(Device).filter(Device.status == "online").count()
     offline = total - online
+    t = get_thresholds(db)
     needs_attention = db.query(Device).filter(
-        (Device.cpu_percent > 90) | (Device.memory_percent > 90) | (Device.disk_percent > 90)
+        (Device.cpu_percent > t["cpu"]) |
+        (Device.memory_percent > t["memory"]) |
+        (Device.disk_percent > t["disk"])
     ).count()
     alerts = db.query(Alert).filter(Alert.dismissed == False).count()
     by_platform = {}
@@ -650,6 +733,19 @@ async def agent_websocket(websocket: WebSocket, agent_id: str, token: str = ""):
         return
     await websocket.accept()
     connected_agents[agent_id] = websocket
+    # Mark online immediately so the UI reflects reality without waiting for
+    # the next 30-second heartbeat.
+    _db = SessionLocal()
+    try:
+        _dev = _db.query(Device).filter(Device.agent_id == agent_id).first()
+        if _dev and _dev.status != "online":
+            _dev.status = "online"
+            _dev.last_seen = datetime.now(timezone.utc)
+            _db.commit()
+    except Exception:
+        pass
+    finally:
+        _db.close()
     try:
         while True:
             data = await websocket.receive_text()
@@ -658,7 +754,11 @@ async def agent_websocket(websocket: WebSocket, agent_id: str, token: str = ""):
             session_id = msg.get("session_id")
             # Remote desktop frames are broadcast to all operators watching this device.
             if mtype == "frame" and msg.get("device_id"):
-                device_id = msg.get("device_id")
+                raw_id = msg.get("device_id")
+                try:
+                    device_id = int(raw_id)
+                except (TypeError, ValueError):
+                    device_id = raw_id
                 for op_ws in device_operators.get(device_id, [])[:]:
                     try:
                         await op_ws.send_text(data)
@@ -685,18 +785,20 @@ async def operator_terminal(websocket: WebSocket, device_id: int, token: str = "
     session_id = str(uuid.uuid4())
     terminal_sessions[session_id] = websocket
     device_operators.setdefault(device_id, []).append(websocket)
+    # Resolve agent_id once at connect time — avoids a blocking DB call on every message.
+    db = SessionLocal()
+    try:
+        device = db.query(Device).filter(Device.id == device_id).first()
+        cached_agent_id = device.agent_id if device else None
+    finally:
+        db.close()
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
             msg["session_id"] = session_id
             msg["device_id"] = device_id
-            db = SessionLocal()
-            try:
-                device = db.query(Device).filter(Device.id == device_id).first()
-                agent_ws = connected_agents.get(device.agent_id) if device else None
-            finally:
-                db.close()
+            agent_ws = connected_agents.get(cached_agent_id) if cached_agent_id else None
             if agent_ws:
                 await agent_ws.send_text(json.dumps(msg))
             else:
@@ -708,6 +810,8 @@ async def operator_terminal(websocket: WebSocket, device_id: int, token: str = "
         ops = device_operators.get(device_id, [])
         if websocket in ops:
             ops.remove(websocket)
+        if not ops:
+            device_operators.pop(device_id, None)
 
 
 # ---- Commands (individual poll) ----
@@ -738,8 +842,8 @@ def delete_device(device_id: int, db: Session = Depends(get_db), current: User =
     db.query(Alert).filter(Alert.device_id == device_id).delete()
     hostname = d.hostname
     db.delete(d)
+    db.add(AuditLog(username=current.username, action="delete_device", detail=f"deleted {hostname}"))
     db.commit()
-    log_audit(db, current.username, "delete_device", f"deleted {hostname}")
     return {"ok": True}
 
 
@@ -789,13 +893,23 @@ def delete_user(user_id: int, db: Session = Depends(get_db), current: User = Dep
     return {"ok": True}
 
 
-# ---- Installer downloads ----
+# ---- Agent self-update ----
 
-@app.get("/install.ps1")
-async def serve_install_ps1(token: str = ""):
-    from fastapi.responses import FileResponse
-    return FileResponse("/app/agent/install.ps1", media_type="text/plain; charset=utf-8",
-                        headers={"Content-Disposition": "inline; filename=install.ps1"})
+@app.post("/api/admin/update-agents")
+async def update_all_agents(db: Session = Depends(get_db), current: User = Depends(require_admin)):
+    """Send update_agent command to every currently-connected agent via WebSocket."""
+    notified = 0
+    for agent_id, ws in list(connected_agents.items()):
+        try:
+            await ws.send_json({"type": "update_agent"})
+            notified += 1
+        except Exception:
+            pass
+    log_audit(db, current.username, "update_agents", f"triggered self-update on {notified} agents")
+    return {"updated": notified, "total": len(connected_agents)}
+
+
+# ---- Installer downloads ----
 
 @app.get("/install.sh")
 async def serve_install_sh(token: str = ""):
@@ -833,22 +947,6 @@ echo "BasicRMM agent installed."
         return PlainTextResponse(sh, media_type="text/plain")
     return FileResponse(str(p), media_type="text/plain; charset=utf-8")
 
-
-# ---- Installer downloads ----
-
-@app.get("/install.ps1")
-async def serve_install_ps1():
-    """Serve the Windows PowerShell installer script."""
-    path = "/app/agent/install.ps1"
-    return FileResponse(path, media_type="text/plain; charset=utf-8",
-                        headers={"Content-Disposition": "inline; filename=install.ps1"})
-
-@app.get("/install.sh")
-async def serve_install_sh():
-    """Serve the Linux/macOS installer script."""
-    path = "/app/agent/install.sh"
-    return FileResponse(path, media_type="text/plain; charset=utf-8",
-                        headers={"Content-Disposition": "inline; filename=install.sh"})
 
 # ---- Static frontend ----
 

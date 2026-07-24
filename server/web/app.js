@@ -9,6 +9,7 @@ let agentToken = '';
 let serverUrl = '';
 let pollTimer = null;
 let alertPollTimer = null;
+let _cmdPolls = [];
 let rdpWs = null;
 let rdpTimerInterval = null;
 let rdpSeconds = 0;
@@ -74,6 +75,15 @@ function toast(msg, type = 'info') {
   setTimeout(() => el.remove(), 3500);
 }
 
+// Normalise a FastAPI error `detail` (string | {msg} | array of {msg}) into text.
+function errText(detail, fallback) {
+  if (detail == null) return fallback;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) return detail.map(d => (d && d.msg) ? d.msg : (typeof d === 'string' ? d : JSON.stringify(d))).join(', ');
+  if (typeof detail === 'object') return detail.msg || detail.detail || JSON.stringify(detail);
+  return String(detail);
+}
+
 async function api(method, path, body) {
   const opts = {
     method,
@@ -84,7 +94,7 @@ async function api(method, path, body) {
   if (r.status === 401) { logout(); throw new Error('Unauthorized'); }
   if (!r.ok) {
     let msg = 'Error ' + r.status;
-    try { const j = await r.json(); msg = j.detail || msg; } catch(e) {}
+    try { const j = await r.json(); msg = errText(j.detail, msg); } catch(e) {}
     throw new Error(msg);
   }
   if (r.status === 204) return null;
@@ -111,7 +121,7 @@ document.getElementById('login-form').addEventListener('submit', async e => {
     const fd = new FormData();
     fd.append('username', u); fd.append('password', p);
     const r = await fetch(API + '/auth/login', { method: 'POST', body: fd });
-    if (!r.ok) { const j = await r.json(); throw new Error(j.detail || 'Login failed'); }
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(errText(j.detail, 'Login failed')); }
     const j = await r.json();
     token = j.access_token;
     localStorage.setItem('rmm_token', token);
@@ -181,11 +191,13 @@ function logout() {
 // ── ROUTING ──────────────────────────────────────────────────────────────────
 
 function navigate(page, deviceId) {
-  // Tear down RDP if switching away
   if (rdpWs && page !== 'device-detail') closeRdp();
+  if (window._termCleanup) { window._termCleanup(); window._termCleanup = null; }
 
   currentPage = page;
   clearInterval(pollTimer);
+  _cmdPolls.forEach(clearInterval);
+  _cmdPolls = [];
 
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.page === page);
@@ -227,7 +239,7 @@ function navigate(page, deviceId) {
 
 function startAlertPoll() {
   updateAlertBadge();
-  setInterval(updateAlertBadge, 10000);
+  alertPollTimer = setInterval(updateAlertBadge, 10000);
 }
 
 async function updateAlertBadge() {
@@ -236,18 +248,22 @@ async function updateAlertBadge() {
     const count = Array.isArray(alerts) ? alerts.length : 0;
     const badge = document.getElementById('alert-badge');
     const topBadge = document.getElementById('topbar-badge');
-    const onlineCount = document.getElementById('sidebar-online-count');
     badge.textContent = count;
     topBadge.textContent = count;
     badge.classList.toggle('hidden', count === 0);
     topBadge.classList.toggle('hidden', count === 0);
-
-    // Also update online count
+  } catch(e) {
+    console.warn('Alert badge update failed:', e);
+  }
+  try {
+    const onlineCount = document.getElementById('sidebar-online-count');
     const devs = await api('GET', '/devices?status=online&limit=1');
     if (devs && devs.total !== undefined) {
       onlineCount.textContent = devs.total + ' agent' + (devs.total !== 1 ? 's' : '') + ' online';
     }
-  } catch(e) {}
+  } catch(e) {
+    console.warn('Online count update failed:', e);
+  }
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
@@ -255,11 +271,19 @@ async function updateAlertBadge() {
 function buildInstallCmds() {
   const su = serverUrl || window.location.origin;
   const tk = agentToken || '';
+  // /install.ps1?token=... is served by the server with the correct URL and token
+  // pre-embedded as param defaults, so no extra args needed when executing.
+  const installUrl = `${su}/install.ps1?token=${tk}`;
+  // Pure in-memory execution: no file writes, no temp path issues, no execution policy block
+  // iex runs a string (not a file) so RestrictedExecutionPolicy doesn't apply
+  const ps1 = `[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; iex (iwr '${installUrl}' -UseBasicParsing).Content`;
+  const batch = `@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; iex (iwr '${installUrl}' -UseBasicParsing).Content"`;
+  const vbs = `Set o=CreateObject("WScript.Shell")\no.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; iex (iwr '${installUrl}' -UseBasicParsing).Content""",0,True`;
   return {
-    ps1:      `$ServerUrl="${su}"; $EnrollToken="${tk}"; $AgentUrl="${su}/agent/agent.py"; Invoke-WebRequest -UseBasicParsing -Uri "${su}/install.ps1?token=${tk}" -OutFile "$env:TEMP\\rmm-install.ps1"; powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\rmm-install.ps1" -ServerUrl $ServerUrl -EnrollToken $EnrollToken -AgentUrl $AgentUrl`,
-    batch:    `@echo off\nset ServerUrl=${su}\nset EnrollToken=${tk}\nset AgentUrl=${su}/agent/agent.py\npowershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri '${su}/install.ps1?token=${tk}' -OutFile '$env:TEMP\\rmm-install.ps1'; & '$env:TEMP\\rmm-install.ps1' -ServerUrl '${su}' -EnrollToken '${tk}' -AgentUrl '${su}/agent/agent.py'"`,
+    ps1,
+    batch,
     linux:    `curl -fsSL "${su}/install.sh?token=${tk}" | sudo bash -s -- --url "${su}" --token "${tk}"`,
-    vbscript: `Set oShell = CreateObject("WScript.Shell")\nDim ps : ps = "powershell -NoProfile -ExecutionPolicy Bypass -Command ""Invoke-WebRequest -UseBasicParsing -Uri '${su}/install.ps1?token=${tk}' -OutFile '$env:TEMP\\rmm.ps1'; & '$env:TEMP\\rmm.ps1' -ServerUrl '${su}' -EnrollToken '${tk}' -AgentUrl '${su}/agent/agent.py'"""\noShell.Run ps, 0, False`
+    vbscript: vbs,
   };
 }
 
@@ -488,13 +512,29 @@ async function renderDevices() {
     devicesCache = all.items || [];
     renderDevicesUI();
     pollTimer = setInterval(async () => {
-      const r = await api('GET', '/devices?limit=500');
-      devicesCache = r.items || [];
-      renderDevicesTableOnly();
+      try {
+        const r = await api('GET', '/devices?limit=500');
+        devicesCache = r.items || [];
+        renderDevicesTableOnly();
+        updateChipCounts();
+      } catch(e) {}
     }, 10000);
   } catch(e) {
     el.innerHTML = `<div class="empty-state"><p>Failed to load devices</p></div>`;
   }
+}
+
+function updateChipCounts() {
+  const all = devicesCache;
+  const servers  = all.filter(d => (d.os||'').toLowerCase().includes('server')).length;
+  const endpoints = all.length - servers;
+  const attention = all.filter(d => (d.cpu_percent||0)>90||(d.memory_percent||0)>90||(d.disk_percent||0)>90).length;
+  const offline   = all.filter(d => d.status === 'offline').length;
+  const counts = { all: all.length, servers, endpoints, attention, offline };
+  document.querySelectorAll('[data-filter]').forEach(chip => {
+    const span = chip.querySelector('.chip-count');
+    if (span && counts[chip.dataset.filter] !== undefined) span.textContent = counts[chip.dataset.filter];
+  });
 }
 
 function getFilteredDevices() {
@@ -634,12 +674,15 @@ function renderDevicesUI() {
   });
 
   document.getElementById('dev-update-all').addEventListener('click', async () => {
-    const online = devicesCache.filter(d=>d.status==='online');
+    const online = devicesCache.filter(d => d.status === 'online');
     if (!online.length) { toast('No online devices', 'info'); return; }
-    for (const d of online) {
-      try { await api('POST', `/devices/${d.id}/command`, {shell:'powershell', command:'Write-Host "Update check"'}); } catch(e) {}
+    if (!confirm(`Push agent update to ${online.length} online device(s)? Each will download the latest binary and restart.`)) return;
+    try {
+      const r = await api('POST', '/admin/update-agents', {});
+      toast(`Update triggered on ${r.updated} device(s) — they will reconnect in ~10 s`, 'success');
+    } catch (e) {
+      toast('Update failed: ' + (e.message || e), 'error');
     }
-    toast(`Sent update command to ${online.length} device(s)`, 'success');
   });
 }
 
@@ -754,8 +797,7 @@ async function renderDeviceDetail(deviceId) {
   <div class="tabs" id="device-tabs">
     <button class="tab-btn active" data-tab="overview">Overview</button>
     <button class="tab-btn" data-tab="terminal">Live Terminal</button>
-    <button class="tab-btn" data-tab="rdp">Remote Desktop</button>
-    <button class="tab-btn" data-tab="curtain">Curtain</button>
+    <button class="tab-btn" data-tab="rdp">Remote</button>
     <button class="tab-btn" data-tab="software">Software</button>
     <button class="tab-btn" data-tab="patches">Patches</button>
     <button class="tab-btn" data-tab="history">Command History</button>
@@ -781,7 +823,7 @@ async function loadDeviceTab(tab, device) {
   if (tab === 'overview') renderOverviewTab(el, device);
   else if (tab === 'terminal') renderTerminalTab(el, device);
   else if (tab === 'rdp') renderRdpTab(el, device);
-  else if (tab === 'curtain') renderCurtainTab(el, device);
+  // curtain tab removed — now integrated in remote panel
   else if (tab === 'software') await renderSoftwareTab(el, device.id);
   else if (tab === 'patches') await renderPatchesTab(el, device.id);
   else if (tab === 'history') await renderHistoryTab(el, device.id);
@@ -875,15 +917,25 @@ async function pollCmdResult(cmdId, outputEl) {
   let attempts = 0;
   const interval = setInterval(async () => {
     attempts++;
-    if (attempts > 30) { clearInterval(interval); outputEl.textContent += '\n[Timeout waiting for result]'; return; }
+    if (attempts > 30) {
+      clearInterval(interval);
+      _cmdPolls = _cmdPolls.filter(i => i !== interval);
+      outputEl.textContent += '\n[Timeout waiting for result]';
+      return;
+    }
     try {
       const c = await api('GET', `/commands/${cmdId}`);
-      if (c.status !== 'queued') {
+      if (c.status !== 'queued' && c.status !== 'running') {
         clearInterval(interval);
+        _cmdPolls = _cmdPolls.filter(i => i !== interval);
         outputEl.textContent = c.output || '(no output)';
       }
-    } catch(e) { clearInterval(interval); }
+    } catch(e) {
+      clearInterval(interval);
+      _cmdPolls = _cmdPolls.filter(i => i !== interval);
+    }
   }, 2000);
+  _cmdPolls.push(interval);
 }
 
 function renderTerminalTab(el, device) {
@@ -940,83 +992,167 @@ function renderTerminalTab(el, device) {
     }
   });
 
-  // Clean up on navigate
-  const origNavigate = window._termCleanup;
-  window._termCleanup = () => { if (ws) ws.close(); };
+  window._termCleanup = () => { if (ws) { ws.close(); ws = null; } };
 }
 
 function renderRdpTab(el, device) {
+  let selectedCurtainAction = 'black';
+  let rdpFrameCount = 0;
+
   el.innerHTML = `
-  <div class="rdp-wrap">
-    <div class="rdp-ctrl-bar">
-      <div class="rdp-ctrl-group">
-        <span class="rdp-ctrl-label">CONNECTED</span>
+  <div class="remote-shell">
+    <!-- Left: toolbar + screen -->
+    <div class="remote-screen-col">
+      <!-- Toolbar strip -->
+      <div class="remote-toolbar">
+        <div class="rdp-status-dot" id="rdp-conn-dot"></div>
+        <span id="rdp-conn-label" style="font-size:11px;color:var(--muted)">Connecting…</span>
         <span class="rdp-timer" id="rdp-timer">00:00</span>
-      </div>
-      <div class="rdp-ctrl-sep ctrl-sep"></div>
-      <div class="rdp-ctrl-group">
-        <span class="rdp-ctrl-label">INPUT</span>
+        <div class="rdp-toolbar-sep"></div>
         <label class="rdp-toggle">
           <label class="toggle-sw"><input type="checkbox" id="rdp-input-toggle" checked><span class="toggle-slider"></span></label>
-          <span style="font-size:11px;color:var(--muted)" id="rdp-input-label">My-control</span>
+          <span id="rdp-input-label">Input</span>
         </label>
-      </div>
-      <div class="ctrl-sep"></div>
-      <div class="rdp-ctrl-group">
-        <span class="rdp-ctrl-label">DISPLAY</span>
-        <button class="rdp-btn ${rdpFitMode?'active':''}" id="rdp-fit-btn">Fit</button>
-        <button class="rdp-btn" id="rdp-1x-btn">1:1</button>
-      </div>
-      <div class="ctrl-sep"></div>
-      <div class="rdp-ctrl-group">
-        <span class="rdp-ctrl-label">PRIVACY</span>
-        <select class="rdp-select" id="rdp-curtain-sel">
-          <option value="">Blank-dropdown</option>
-          <option value="blank">Blank screen</option>
-          <option value="lock">Lock</option>
-          <option value="blanklok">Blank + Lock</option>
-          <option value="unblank">Restore screen</option>
-        </select>
-        <button class="rdp-btn" id="rdp-lock-btn">Lock</button>
-        <button class="rdp-btn" id="rdp-blanklok-btn">Blank+Lock</button>
-        <label class="rdp-toggle">
+        <label class="rdp-toggle" style="margin-left:4px" title="Block the remote user's keyboard and mouse">
+          <label class="toggle-sw"><input type="checkbox" id="rdp-block-input"><span class="toggle-slider"></span></label>
+          <span id="rdp-block-label" style="color:var(--muted)">Block user</span>
+        </label>
+        <div class="rdp-toolbar-sep"></div>
+        <button class="rdp-toolbar-btn active" id="rdp-fit-btn">Fit</button>
+        <button class="rdp-toolbar-btn" id="rdp-1x-btn">1:1</button>
+        <div class="rdp-toolbar-sep"></div>
+        <button class="rdp-toolbar-btn" id="rdp-cad-btn">Ctrl+Alt+Del</button>
+        <label class="rdp-toggle" style="margin-left:4px">
           <label class="toggle-sw"><input type="checkbox" id="rdp-keepawake"><span class="toggle-slider"></span></label>
-          <span style="font-size:11px;color:var(--muted)">Keep-awake</span>
+          <span>Keep-awake</span>
         </label>
+        <div class="rdp-toolbar-sep" style="margin-left:auto"></div>
+        <button class="rdp-toolbar-btn" id="rdp-fullscreen-btn">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          Fullscreen
+        </button>
+        <button class="rdp-toolbar-btn danger" id="rdp-disconnect-btn" style="color:var(--red);border-color:var(--red)">Disconnect</button>
       </div>
-      <div class="ctrl-sep"></div>
-      <div class="rdp-ctrl-group">
-        <span class="rdp-ctrl-label">KEYS</span>
-        <button class="rdp-btn" id="rdp-cad-btn">Ctrl+Alt+Del</button>
+      <!-- Screen area -->
+      <div class="remote-screen-area">
+        <div id="rdp-screen-wrap" tabindex="0">
+          <div id="rdp-placeholder">
+            <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1" style="opacity:.25;margin-bottom:12px"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 20h8M12 18v2"/></svg>
+            <p>Click Connect to start remote view</p>
+          </div>
+          <img id="rdp-img" style="display:none" alt="Remote screen"/>
+        </div>
       </div>
-      <div class="ctrl-sep"></div>
-      <button class="rdp-btn" id="rdp-fullscreen-btn">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-        Full screen
-      </button>
     </div>
-    <div class="rdp-screen-wrap" id="rdp-screen-wrap">
-      <div id="rdp-placeholder">
-        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1" style="opacity:.3;margin-bottom:10px"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 20h8M12 18v2"/></svg>
-        <p>Connecting to remote desktop…</p>
+    <!-- Right panel: curtains + actions + stats -->
+    <div class="remote-right-panel">
+      <div class="rp-section">
+        <div class="rp-title">Curtain overlay</div>
+        <p style="font-size:10px;color:var(--muted);margin-bottom:8px">Applies to agent screen only</p>
+        <div class="curtain-grid">
+          <div class="curtain-tile selected" data-action="black">
+            <div class="curtain-preview" style="background:#000"></div>
+            <div class="curtain-label">Black</div>
+          </div>
+          <div class="curtain-tile" data-action="bsod">
+            <div class="curtain-preview" style="background:#0078D7;align-items:flex-start;padding:4px"><span style="color:#fff;font-size:20px;line-height:1">:(</span></div>
+            <div class="curtain-label">BSOD</div>
+          </div>
+          <div class="curtain-tile" data-action="update">
+            <div class="curtain-preview" style="background:#1a1a1a"><span style="color:#fff;font-size:9px;text-align:center;line-height:1.3;padding:2px">Working on updates</span></div>
+            <div class="curtain-label">Fake Update</div>
+          </div>
+          <div class="curtain-tile" data-action="config">
+            <div class="curtain-preview" style="background:#1a1a1a"><span style="color:#ccc;font-size:9px;text-align:center;line-height:1.3;padding:2px">Configuring Updates</span></div>
+            <div class="curtain-label">Config Upd</div>
+          </div>
+          <div class="curtain-tile" data-action="custom">
+            <div class="curtain-preview" style="background:var(--surface2)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>
+            <div class="curtain-label">Custom</div>
+          </div>
+          <div class="curtain-tile" data-action="remove">
+            <div class="curtain-preview" style="background:var(--surface2)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--red)" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>
+            <div class="curtain-label">Remove</div>
+          </div>
+        </div>
+        <button class="btn btn-sm" id="curtain-apply-btn" style="width:100%;margin-top:8px;background:var(--purple);border-color:var(--purple);color:#fff">Apply to agent</button>
+        <div style="margin-top:6px;display:flex;gap:4px">
+          <input class="form-control" id="curtain-custom-path" placeholder="Custom image path…" style="flex:1;font-size:11px;padding:5px 8px"/>
+        </div>
       </div>
-      <img id="rdp-img" style="display:none" alt="Remote screen"/>
+      <div class="rp-section">
+        <div class="rp-title">Quick actions</div>
+        <button class="qa-btn" id="rdp-lock-btn">🔒 Lock workstation</button>
+        <button class="qa-btn" id="rdp-logoff-btn">🚪 Log off user</button>
+        <button class="qa-btn warn" id="rdp-reboot-btn">↺ Reboot</button>
+        <button class="qa-btn danger" id="rdp-shutdown-btn">⏻ Shutdown</button>
+      </div>
+      <div class="rp-section">
+        <div class="rp-title">Session</div>
+        <div id="rdp-session-stats" style="font-size:10px;color:var(--muted);line-height:2">
+          <div>Duration <span id="rdp-duration" style="float:right;color:var(--fg)">00:00</span></div>
+          <div>Resolution <span id="rdp-res" style="float:right;color:var(--fg)">—</span></div>
+          <div>Frames <span id="rdp-frames" style="float:right;color:var(--green)">0</span></div>
+        </div>
+      </div>
     </div>
   </div>`;
 
   startRdp(device);
 
+  // Curtain tile selection
+  el.querySelectorAll('.curtain-tile').forEach(tile => {
+    tile.addEventListener('click', () => {
+      el.querySelectorAll('.curtain-tile').forEach(t => t.classList.remove('selected'));
+      tile.classList.add('selected');
+      selectedCurtainAction = tile.dataset.action;
+    });
+  });
+
+  document.getElementById('curtain-apply-btn').addEventListener('click', () => {
+    let action = selectedCurtainAction;
+    if (action === 'custom') {
+      const p = document.getElementById('curtain-custom-path').value.trim();
+      if (!p) { toast('Enter a custom image path first', 'error'); return; }
+      action = 'custom:' + p;
+    }
+    if (!rdpWs || rdpWs.readyState !== WebSocket.OPEN) {
+      toast('Agent not connected — open the Remote tab first', 'error');
+      return;
+    }
+    sendRdpMsg({type:'curtain', action});
+    // Auto-block user input with any curtain, auto-unblock when removing
+    const blocking = action !== 'remove';
+    sendRdpMsg({type:'block_input', enabled: blocking});
+    const blockToggle = document.getElementById('rdp-block-input');
+    const blockLbl = document.getElementById('rdp-block-label');
+    if (blockToggle) blockToggle.checked = blocking;
+    if (blockLbl) { blockLbl.textContent = blocking ? 'User blocked' : 'Block user'; blockLbl.style.color = blocking ? 'var(--red)' : 'var(--muted)'; }
+    toast(action === 'remove' ? 'Curtain removed, user input restored' : 'Curtain applied, user input blocked', 'success');
+  });
+
   document.getElementById('rdp-input-toggle').addEventListener('change', e => {
     rdpInputEnabled = e.target.checked;
-    document.getElementById('rdp-input-label').textContent = rdpInputEnabled ? 'My-control' : 'View only';
+    document.getElementById('rdp-input-label').textContent = rdpInputEnabled ? 'Input' : 'View only';
+  });
+  document.getElementById('rdp-block-input').addEventListener('change', e => {
+    const blocked = e.target.checked;
+    sendRdpMsg({type: 'block_input', enabled: blocked});
+    const lbl = document.getElementById('rdp-block-label');
+    if (lbl) { lbl.textContent = blocked ? 'User blocked' : 'Block user'; lbl.style.color = blocked ? 'var(--red)' : 'var(--muted)'; }
+    toast(blocked ? 'Remote user input blocked' : 'Remote user input unblocked', blocked ? 'warn' : 'success');
   });
   document.getElementById('rdp-fit-btn').addEventListener('click', () => {
     rdpFitMode = true;
+    document.getElementById('rdp-fit-btn').classList.add('active');
+    document.getElementById('rdp-1x-btn').classList.remove('active');
     const img = document.getElementById('rdp-img');
     if (img) { img.style.maxWidth='100%'; img.style.maxHeight='100%'; img.style.width=''; img.style.height=''; }
   });
   document.getElementById('rdp-1x-btn').addEventListener('click', () => {
     rdpFitMode = false;
+    document.getElementById('rdp-1x-btn').classList.add('active');
+    document.getElementById('rdp-fit-btn').classList.remove('active');
     const img = document.getElementById('rdp-img');
     if (img) { img.style.width = rdpRemoteW+'px'; img.style.height = rdpRemoteH+'px'; img.style.maxWidth='none'; img.style.maxHeight='none'; }
   });
@@ -1024,16 +1160,29 @@ function renderRdpTab(el, device) {
     const wrap = document.getElementById('rdp-screen-wrap');
     if (wrap) wrap.requestFullscreen?.();
   });
+  document.getElementById('rdp-disconnect-btn').addEventListener('click', () => closeRdp());
   document.getElementById('rdp-cad-btn').addEventListener('click', () => sendRdpMsg({type:'key', keys:['ctrl','alt','del']}));
-  document.getElementById('rdp-lock-btn').addEventListener('click', () => sendRdpMsg({type:'curtain', action:'lock'}));
-  document.getElementById('rdp-blanklok-btn').addEventListener('click', () => sendRdpMsg({type:'curtain', action:'blanklok'}));
-  document.getElementById('rdp-curtain-sel').addEventListener('change', e => {
-    if (e.target.value) sendRdpMsg({type:'curtain', action: e.target.value});
-    e.target.value = '';
-  });
   document.getElementById('rdp-keepawake').addEventListener('change', e => {
     sendRdpMsg({type:'keepawake', enabled: e.target.checked});
   });
+
+  // Quick action buttons
+  document.getElementById('rdp-lock-btn').addEventListener('click', () => sendRdpMsg({type:'curtain', action:'lock'}));
+  document.getElementById('rdp-logoff-btn').addEventListener('click', () => {
+    api('POST', `/devices/${device.id}/command`, {shell:'powershell', command:'logoff'})
+      .then(() => toast('Log off sent', 'success')).catch(e => toast(e.message, 'error'));
+  });
+  document.getElementById('rdp-reboot-btn').addEventListener('click', () => {
+    if (!confirm('Reboot this device?')) return;
+    api('POST', `/devices/${device.id}/command`, {shell:'powershell', command:'Restart-Computer -Force'})
+      .then(() => toast('Reboot command sent', 'success')).catch(e => toast(e.message, 'error'));
+  });
+  document.getElementById('rdp-shutdown-btn').addEventListener('click', () => {
+    if (!confirm('Shutdown this device?')) return;
+    api('POST', `/devices/${device.id}/command`, {shell:'powershell', command:'Stop-Computer -Force'})
+      .then(() => toast('Shutdown command sent', 'success')).catch(e => toast(e.message, 'error'));
+  });
+
   const screenWrap = document.getElementById('rdp-screen-wrap');
 
   function rdpImgCoords(e) {
@@ -1046,25 +1195,38 @@ function renderRdpTab(el, device) {
     };
   }
 
-  screenWrap.addEventListener('click', e => {
+  // Focus screenWrap on mousedown so keyboard events are captured immediately
+  screenWrap.addEventListener('mousedown', e => {
+    screenWrap.focus();
+    if (!rdpInputEnabled) return;
+    e.preventDefault();
+    const c = rdpImgCoords(e);
+    if (!c) return;
+    const btn = e.button === 2 ? 1 : 0;
+    sendRdpMsg({type:'remote_input', event:'mousedown', x:c.x, y:c.y, button:btn});
+  });
+  screenWrap.addEventListener('mouseup', e => {
     if (!rdpInputEnabled) return;
     const c = rdpImgCoords(e);
     if (!c) return;
-    sendRdpMsg({type:'remote_input', event:'click', x:c.x, y:c.y, button:0});
+    const btn = e.button === 2 ? 1 : 0;
+    sendRdpMsg({type:'remote_input', event:'mouseup', x:c.x, y:c.y, button:btn});
+  });
+  screenWrap.addEventListener('dblclick', e => {
+    if (!rdpInputEnabled) return;
+    const c = rdpImgCoords(e);
+    if (!c) return;
+    sendRdpMsg({type:'remote_input', event:'dblclick', x:c.x, y:c.y});
   });
   screenWrap.addEventListener('contextmenu', e => {
-    e.preventDefault();
-    if (!rdpInputEnabled) return;
-    const c = rdpImgCoords(e);
-    if (!c) return;
-    sendRdpMsg({type:'remote_input', event:'click', x:c.x, y:c.y, button:1});
+    e.preventDefault(); // suppress browser right-click menu
   });
 
   let _rdpLastMove = 0;
   screenWrap.addEventListener('mousemove', e => {
     if (!rdpInputEnabled) return;
     const now = Date.now();
-    if (now - _rdpLastMove < 40) return; // cap at ~25fps
+    if (now - _rdpLastMove < 40) return; // ~25fps
     _rdpLastMove = now;
     const c = rdpImgCoords(e);
     if (!c) return;
@@ -1073,17 +1235,20 @@ function renderRdpTab(el, device) {
   screenWrap.addEventListener('wheel', e => {
     e.preventDefault();
     if (!rdpInputEnabled) return;
-    sendRdpMsg({type:'remote_input', event:'scroll', dx: Math.round(-e.deltaX/3), dy: Math.round(-e.deltaY/3)});
+    sendRdpMsg({type:'remote_input', event:'scroll', dy: Math.round(-e.deltaY / 3)});
   }, {passive: false});
 
-  // Keyboard forwarding — only when RDP screen is focused
+  // Keyboard — only captured when screenWrap has focus (user clicked the screen)
   screenWrap.setAttribute('tabindex', '0');
   screenWrap.addEventListener('keydown', e => {
     if (!rdpInputEnabled) return;
-    // Don't swallow browser-critical combos
+    // Skip bare modifier key events — they ride along as flags on the actual key
+    if (['Control','Shift','Alt','Meta','AltGraph','CapsLock','NumLock','ScrollLock'].includes(e.key)) return;
+    // Don't intercept browser-critical shortcuts
     if ((e.ctrlKey && e.key === 'w') || (e.ctrlKey && e.key === 't') || e.key === 'F12') return;
     e.preventDefault();
-    sendRdpMsg({type:'remote_input', event:'key', key: e.key});
+    sendRdpMsg({type:'remote_input', event:'key', key: e.key,
+                ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey});
   });
 }
 
@@ -1094,8 +1259,11 @@ function startRdp(device) {
     rdpSeconds++;
     const m = String(Math.floor(rdpSeconds/60)).padStart(2,'0');
     const s = String(rdpSeconds%60).padStart(2,'0');
+    const ts = m+':'+s;
     const t = document.getElementById('rdp-timer');
-    if (t) t.textContent = m+':'+s;
+    if (t) t.textContent = ts;
+    const d = document.getElementById('rdp-duration');
+    if (d) d.textContent = ts;
   }, 1000);
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1104,6 +1272,10 @@ function startRdp(device) {
 
   rdpWs.onopen = () => {
     rdpWs.send(JSON.stringify({type:'remote_start'}));
+    const dot = document.getElementById('rdp-conn-dot');
+    const lbl = document.getElementById('rdp-conn-label');
+    if (dot) dot.classList.add('connected');
+    if (lbl) lbl.textContent = 'Connected';
   };
   rdpWs.onmessage = e => {
     try {
@@ -1112,18 +1284,28 @@ function startRdp(device) {
         const img = document.getElementById('rdp-img');
         const ph = document.getElementById('rdp-placeholder');
         if (img) {
-          // agent sends raw base64; prefix it for the data URL
           img.src = 'data:image/jpeg;base64,' + msg.data;
           img.style.display = 'block';
           if (ph) ph.style.display = 'none';
-          if (msg.w) rdpRemoteW = msg.w;
+          if (msg.w) { rdpRemoteW = msg.w; const r = document.getElementById('rdp-res'); if (r) r.textContent = msg.w + '×' + (msg.h || rdpRemoteH); }
           if (msg.h) rdpRemoteH = msg.h;
+          // increment frame counter
+          const fc = document.getElementById('rdp-frames');
+          if (fc) fc.textContent = +fc.textContent + 1;
         }
       }
     } catch(_) {}
   };
-  rdpWs.onclose = () => {};
-  rdpWs.onerror = () => {};
+  rdpWs.onclose = () => {
+    const dot = document.getElementById('rdp-conn-dot');
+    const lbl = document.getElementById('rdp-conn-label');
+    if (dot) dot.classList.remove('connected');
+    if (lbl) lbl.textContent = 'Disconnected';
+  };
+  rdpWs.onerror = () => {
+    const lbl = document.getElementById('rdp-conn-label');
+    if (lbl) lbl.textContent = 'Error';
+  };
 }
 
 function closeRdp() {
@@ -1134,98 +1316,6 @@ function closeRdp() {
 
 function sendRdpMsg(msg) {
   if (rdpWs && rdpWs.readyState === WebSocket.OPEN) rdpWs.send(JSON.stringify(msg));
-}
-
-function renderCurtainTab(el, device) {
-  el.innerHTML = `
-  <div style="display:flex;flex-direction:column;gap:16px;max-width:640px">
-
-    <div class="card">
-      <div class="card-title">Screen Overlay (tkinter)</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Fullscreen overlays — covers the agent's screen, blocks user interaction</p>
-      <div class="curtain-grid" id="curtain-grid">
-        <button class="curtain-tile" data-action="black">
-          <div class="curtain-tile-preview" style="background:#000"></div>
-          <span>Black Screen</span>
-        </button>
-        <button class="curtain-tile" data-action="update">
-          <div class="curtain-tile-preview" style="background:#1a1a1a;display:flex;align-items:center;justify-content:center">
-            <span style="color:#fff;font-size:9px;text-align:center;line-height:1.4">Working<br>on updates</span>
-          </div>
-          <span>Fake Update</span>
-        </button>
-        <button class="curtain-tile" data-action="config">
-          <div class="curtain-tile-preview" style="background:#1a1a1a;display:flex;align-items:center;justify-content:center">
-            <span style="color:#ccc;font-size:9px;text-align:center;line-height:1.4">Configuring<br>Updates</span>
-          </div>
-          <span>Config Update</span>
-        </button>
-        <button class="curtain-tile" data-action="bsod">
-          <div class="curtain-tile-preview" style="background:#0078D7;display:flex;align-items:flex-start;padding:4px">
-            <span style="color:#fff;font-size:18px;line-height:1">:(</span>
-          </div>
-          <span>Fake BSOD</span>
-        </button>
-        <button class="curtain-tile curtain-tile-remove" data-action="remove">
-          <div class="curtain-tile-preview" style="background:var(--elevated);display:flex;align-items:center;justify-content:center">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </div>
-          <span>Remove Overlay</span>
-        </button>
-      </div>
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-        <input class="form-control" id="curtain-custom-path" placeholder="Custom image path on agent (e.g. C:\\img.jpg)" style="flex:1"/>
-        <button class="btn btn-secondary btn-sm" id="curtain-custom-btn">Custom Image</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">Session Control</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-secondary btn-sm" id="curtain-lock-btn">Lock Workstation</button>
-        <button class="btn btn-secondary btn-sm" id="curtain-blanklok-btn">Blank + Lock</button>
-        <button class="btn btn-danger btn-sm" id="curtain-logoff-btn">Log Off User</button>
-      </div>
-    </div>
-
-    <div class="cmd-output hidden" id="curtain-out"></div>
-  </div>`;
-
-  const out = document.getElementById('curtain-out');
-
-  async function sendCurtainCmd(shell, command) {
-    out.classList.remove('hidden');
-    out.textContent = 'Sending…';
-    try {
-      const r = await api('POST', `/devices/${device.id}/command`, {shell, command});
-      out.textContent = 'Queued (cmd #' + r.id + '). Polling…';
-      pollCmdResult(r.id, out);
-    } catch(e) { out.textContent = 'Error: ' + e.message; }
-  }
-
-  // Overlay tiles
-  document.getElementById('curtain-grid').addEventListener('click', e => {
-    const btn = e.target.closest('[data-action]');
-    if (!btn) return;
-    sendCurtainCmd('curtain', btn.dataset.action);
-  });
-
-  // Custom image
-  document.getElementById('curtain-custom-btn').addEventListener('click', () => {
-    const p = document.getElementById('curtain-custom-path').value.trim();
-    if (!p) { out.classList.remove('hidden'); out.textContent = 'Enter a path first'; return; }
-    sendCurtainCmd('curtain', 'custom:' + p);
-  });
-
-  // Session control buttons
-  document.getElementById('curtain-lock-btn').addEventListener('click', () =>
-    sendCurtainCmd('powershell', 'rundll32 user32.dll,LockWorkStation'));
-  document.getElementById('curtain-blanklok-btn').addEventListener('click', async () => {
-    await sendCurtainCmd('curtain', 'black');
-    await sendCurtainCmd('powershell', 'rundll32 user32.dll,LockWorkStation');
-  });
-  document.getElementById('curtain-logoff-btn').addEventListener('click', () =>
-    sendCurtainCmd('powershell', 'logoff'));
 }
 
 async function renderSoftwareTab(el, deviceId) {
@@ -1264,7 +1354,7 @@ async function renderHistoryTab(el, deviceId) {
         <td><span class="os-chip">${esc(c.shell)}</span></td>
         <td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.command)}">${esc(c.command)}</td>
         <td>${c.status==='done'?'<span class="badge badge-online">done</span>':c.status==='queued'?'<span class="badge badge-info">queued</span>':'<span class="badge badge-offline">'+esc(c.status)+'</span>'}</td>
-        <td class="mono">${c.exit_code??'—'}</td>
+        <td class="mono">${esc(String(c.exit_code ?? '—'))}</td>
         <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-family:monospace" title="${esc(c.output||'')}">${esc((c.output||'').slice(0,80))}</td>
         <td style="white-space:nowrap;font-size:11px">${timeAgo(c.created_at)}</td>
         <td style="white-space:nowrap;font-size:11px">${c.completed_at?timeAgo(c.completed_at):'—'}</td>
@@ -1512,7 +1602,7 @@ async function renderScripts() {
     });
   });
   el.querySelectorAll('.sc-edit-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const s = scripts.find(x=>x.id==btn.dataset.id);
       if (!s) return;
       editingScriptId = s.id;
@@ -1520,13 +1610,15 @@ async function renderScripts() {
       document.getElementById('sc-name').value = s.name;
       document.getElementById('sc-lang').value = s.language;
       document.getElementById('sc-desc').value = s.description||'';
-      document.getElementById('sc-code').value = '';
+      document.getElementById('sc-code').value = 'Loading…';
       document.getElementById('script-form').classList.remove('hidden');
-      // Fetch full code
-      api('GET',`/scripts`).then(all => {
-        const full = all.find(x=>x.id==s.id);
-        // code not returned from list, just leave blank for user to re-enter
-      });
+      try {
+        const full = await api('GET', `/scripts/${s.id}`);
+        document.getElementById('sc-code').value = full.code || '';
+      } catch(e) {
+        document.getElementById('sc-code').value = '';
+        toast('Could not load script code', 'error');
+      }
     });
   });
   el.querySelectorAll('.sc-run-btn').forEach(btn => {
@@ -1911,14 +2003,14 @@ async function renderSettings() {
     </div>
   </div>
 
-  <div class="card" style="max-width:600px">
+  ${s.agent_token !== undefined ? `<div class="card" style="max-width:600px">
     <div class="card-title">Agent Token</div>
     <div class="code-block" style="position:relative">
       <pre id="agent-token-text">${esc(s.agent_token)}</pre>
       <button class="copy-btn" id="copy-token-btn">Copy</button>
     </div>
     <p style="margin-top:10px;color:var(--muted);font-size:12px">This token is required for agents to authenticate. Keep it secret.</p>
-  </div>`;
+  </div>` : ''}` ;
 
   document.getElementById('save-settings').addEventListener('click', async () => {
     const payload = {
@@ -1929,9 +2021,11 @@ async function renderSettings() {
     };
     try { await api('PUT', '/settings', payload); toast('Settings saved','success'); serverUrl = payload.server_url; } catch(e) { toast(e.message,'error'); }
   });
-  document.getElementById('copy-token-btn').addEventListener('click', function() {
-    copyText(s.agent_token, this);
-  });
+  if (s.agent_token !== undefined) {
+    document.getElementById('copy-token-btn').addEventListener('click', function() {
+      copyText(s.agent_token, this);
+    });
+  }
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────

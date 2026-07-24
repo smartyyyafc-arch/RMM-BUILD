@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>BasicRMM — Operator Console</title>
-<link rel="stylesheet" href="styles.css?v=6"/>
+<link rel="stylesheet" href="styles.css?v=16"/>
 </head>
 <body>
 
@@ -16,11 +16,11 @@
     <p class="login-sub">Operator Console</p>
     <form id="login-form" autocomplete="off">
       <div class="field-group">
-        <label>Username</label>
+        <label for="login-user">Username</label>
         <input id="login-user" type="text" placeholder="admin" autocomplete="username"/>
       </div>
       <div class="field-group">
-        <label>Password</label>
+        <label for="login-pass">Password</label>
         <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password"/>
       </div>
       <div id="login-err" class="login-err hidden"></div>
@@ -145,6 +145,6 @@
 <div id="toast-container"></div>
 <div id="modal-overlay" class="modal-overlay hidden"><div id="modal-box" class="modal-box"></div></div>
 
-<script src="app.js?v=6"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>

@@ -31,8 +31,30 @@ except Exception:
 
 SERVER = os.getenv("RMM_SERVER", "http://localhost:8000")
 AGENT_TOKEN = os.getenv("RMM_AGENT_TOKEN", "agent-secret-change-me")
-AGENT_ID = os.getenv("RMM_AGENT_ID", str(uuid.uuid4()))
 HEARTBEAT_INTERVAL = int(os.getenv("RMM_HEARTBEAT_INTERVAL", "30"))
+
+
+def _load_or_create_agent_id() -> str:
+    conf_dir = os.path.dirname(os.path.abspath(__file__))
+    conf_path = os.path.join(conf_dir, "agent.conf")
+    if os.path.exists(conf_path):
+        try:
+            with open(conf_path) as f:
+                data = json.load(f)
+            if data.get("agent_id"):
+                return data["agent_id"]
+        except Exception:
+            pass
+    agent_id = os.getenv("RMM_AGENT_ID") or str(uuid.uuid4())
+    try:
+        with open(conf_path, "w") as f:
+            json.dump({"agent_id": agent_id}, f)
+    except Exception:
+        pass
+    return agent_id
+
+
+AGENT_ID = _load_or_create_agent_id()
 
 class Agent:
     def __init__(self):
@@ -110,6 +132,7 @@ class Agent:
     def report_result(self, cmd_id, exit_code, output):
         try:
             requests.post(f"{self.server}/api/agent/command/{cmd_id}/result", json={
+                "token": self.token,
                 "status": "done" if exit_code == 0 else "failed",
                 "exit_code": exit_code,
                 "output": output[:100000]
@@ -297,7 +320,8 @@ root.mainloop()
                     self.start_shell(session_id)
                 if self.shell and self.shell.stdin:
                     try:
-                        self.shell.stdin.write(msg["data"].encode())
+                        text = msg.get("text") or msg.get("data") or ""
+                        self.shell.stdin.write(text.encode())
                         self.shell.stdin.flush()
                     except Exception as e:
                         self.send_ws({"type": "error", "text": str(e), "session_id": session_id})

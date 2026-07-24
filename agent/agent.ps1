@@ -1,351 +1,486 @@
-# BasicRMM Agent - Pure PowerShell, no dependencies required
-# Requires: PowerShell 5.1+ (built into Windows 10/11/Server 2016+)
+# BasicRMM Agent - Pure PowerShell, no external dependencies
+# Requires PowerShell 5.1+ (built into Windows 10/11/Server 2016+)
 param(
-    [string]$Server  = $env:RMM_SERVER,
-    [string]$Token   = $env:RMM_AGENT_TOKEN
+    [string]$Server = $env:RMM_SERVER,
+    [string]$Token  = $env:RMM_AGENT_TOKEN
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
 
-# ── Persistent Agent ID ───────────────────────────────────────────────────────
-$ConfigFile = "$PSScriptRoot\agent.conf"
-if (Test-Path $ConfigFile) {
-    $cfg     = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-    $AgentId = $cfg.agent_id
-} else {
-    $AgentId = [System.Guid]::NewGuid().ToString()
-    [pscustomobject]@{agent_id=$AgentId} | ConvertTo-Json | Set-Content $ConfigFile
+# Force TLS 1.2 — required for modern HTTPS; PS 5.1 defaults to TLS 1.0 which fails
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+# Log file for diagnostics
+$LogFile = Join-Path $PSScriptRoot "agent.log"
+function Write-Log($msg) {
+    $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
+    try { Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
+    Write-Host $line
 }
 
-# ── C# helpers (screen capture + input simulation) ────────────────────────────
-# Wrap in try/catch — these fail gracefully if no display (e.g. Server Core)
-try { Add-Type -ReferencedAssemblies 'System.Drawing','System.Windows.Forms' -TypeDefinition @'
-using System;
-using System.Drawing;
-using System.Drawing.Imaging;
-using System.IO;
-using System.Windows.Forms;
-using System.Runtime.InteropServices;
+if (-not $Server) { Write-Log "ERROR: No server URL"; exit 1 }
+if (-not $Token)  { Write-Log "ERROR: No token";      exit 1 }
 
+# ── Persistent Agent ID ──────────────────────────────────────────────────────
+$ConfigFile = Join-Path $PSScriptRoot "agent.conf"
+if (Test-Path $ConfigFile) {
+    try { $AgentId = (Get-Content $ConfigFile -Raw | ConvertFrom-Json).agent_id } catch {}
+}
+if (-not $AgentId) {
+    $AgentId = [System.Guid]::NewGuid().ToString()
+    try { [pscustomobject]@{agent_id=$AgentId} | ConvertTo-Json | Set-Content $ConfigFile -Encoding UTF8 } catch {}
+}
+
+Write-Log "BasicRMM Agent $AgentId starting — $Server"
+
+# ── HTTP helper ──────────────────────────────────────────────────────────────
+function Invoke-Post($Url, $Body) {
+    try {
+        $json = $Body | ConvertTo-Json -Depth 5 -Compress
+        $r = Invoke-WebRequest -UseBasicParsing -Uri $Url -Method POST `
+             -Body $json -ContentType 'application/json' -TimeoutSec 15
+        return $r.Content | ConvertFrom-Json
+    } catch {
+        Write-Log "POST error $Url : $_"
+        return $null
+    }
+}
+
+# ── Metrics ──────────────────────────────────────────────────────────────────
+$script:OsCaption = 'Windows'
+$script:LocalIP   = '0.0.0.0'
+try { $script:OsCaption = (Get-WmiObject Win32_OperatingSystem).Caption } catch {}
+try {
+    $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+         Sort-Object RouteMetric | Select-Object -First 1
+    $script:LocalIP = (Get-NetIPAddress -InterfaceIndex $r.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop).IPAddress
+} catch {}
+
+function Get-Metrics {
+    $cpu = 0; $mem = 0; $disk = 0
+    try { $cpu  = [math]::Round((Get-WmiObject Win32_Processor).LoadPercentage, 1) } catch {}
+    try {
+        $os  = Get-WmiObject Win32_OperatingSystem
+        $mem = [math]::Round((1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize) * 100, 1)
+    } catch {}
+    try { $d = Get-PSDrive C; $disk = [math]::Round($d.Used / ($d.Used + $d.Free) * 100, 1) } catch {}
+    return @{ cpu=$cpu; mem=$mem; disk=$disk }
+}
+
+# ── WebSocket background job ──────────────────────────────────────────────────
+# Runs in its own PowerShell runspace — no shared state issues
+$WsJobScript = {
+    param([string]$Server, [string]$Token, [string]$AgentId)
+    $ErrorActionPreference = 'SilentlyContinue'
+    $ProgressPreference    = 'SilentlyContinue'
+
+    # WPF curtain overlay — defined here so the WS runspace can start it
+    $LocalCurtainScript = {
+        param([string]$Action)
+        $ErrorActionPreference = 'SilentlyContinue'
+        try {
+            if ($Action -eq 'logoff') { logoff; return }
+            Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+            if ($Action -eq 'lock') {
+                Add-Type -Name U2 -Namespace W2 -MemberDefinition '[DllImport("user32.dll")]public static extern bool LockWorkStation();'
+                [W2.U2]::LockWorkStation() | Out-Null; return
+            }
+            if ($Action -eq 'remove') { return }
+            $w = [System.Windows.Window]::new()
+            $w.WindowStyle    = 'None'
+            $w.WindowState    = 'Maximized'
+            $w.Topmost        = $true
+            $w.AllowsTransparency = $false
+            switch -Wildcard ($Action) {
+                'black'  { $w.Background = [System.Windows.Media.Brushes]::Black }
+                'bsod'   {
+                    $w.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(0,120,215)
+                    $sp = [System.Windows.Controls.StackPanel]::new()
+                    $t1 = [System.Windows.Controls.TextBlock]::new()
+                    $t1.Text = ':)'; $t1.Foreground = [System.Windows.Media.Brushes]::White
+                    $t1.FontSize = 120; $t1.Margin = [System.Windows.Thickness]::new(80,60,0,20)
+                    $t2 = [System.Windows.Controls.TextBlock]::new()
+                    $t2.Text = "Your PC ran into a problem and needs to restart.`nWe're collecting some error info, and then we'll restart for you.`n`n0% complete"
+                    $t2.Foreground = [System.Windows.Media.Brushes]::White; $t2.FontSize = 24
+                    $t2.Margin = [System.Windows.Thickness]::new(80,0,0,0); $t2.TextWrapping = 'Wrap'
+                    $sp.Children.Add($t1); $sp.Children.Add($t2)
+                    $w.Content = $sp
+                }
+                'update' {
+                    $w.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(26,26,26)
+                    $sp = [System.Windows.Controls.StackPanel]::new()
+                    $sp.VerticalAlignment = 'Center'; $sp.HorizontalAlignment = 'Center'
+                    $t1 = [System.Windows.Controls.TextBlock]::new()
+                    $t1.Text = 'Working on updates  100%'; $t1.FontSize = 36
+                    $t1.Foreground = [System.Windows.Media.Brushes]::White
+                    $t1.HorizontalAlignment = 'Center'
+                    $t2 = [System.Windows.Controls.TextBlock]::new()
+                    $t2.Text = "Don't turn off your PC"; $t2.FontSize = 18
+                    $t2.Foreground = [System.Windows.Media.Brushes]::Gray
+                    $t2.HorizontalAlignment = 'Center'; $t2.Margin = [System.Windows.Thickness]::new(0,12,0,0)
+                    $sp.Children.Add($t1); $sp.Children.Add($t2)
+                    $w.Content = $sp
+                }
+                'config' {
+                    $w.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(10,10,40)
+                    $t = [System.Windows.Controls.TextBlock]::new()
+                    $t.Text = 'Configuring system...'; $t.FontSize = 28
+                    $t.Foreground = [System.Windows.Media.Brushes]::Cyan
+                    $t.VerticalAlignment = 'Center'; $t.HorizontalAlignment = 'Center'
+                    $w.Content = $t
+                }
+                'custom:*' {
+                    $imgPath = $Action.Substring(7)
+                    $w.Background = [System.Windows.Media.Brushes]::Black
+                    try {
+                        $img = [System.Windows.Controls.Image]::new()
+                        $bmp = [System.Windows.Media.Imaging.BitmapImage]::new([System.Uri]::new($imgPath))
+                        $img.Source = $bmp
+                        $img.Stretch = [System.Windows.Media.Stretch]::UniformToFill
+                        $w.Content = $img
+                    } catch {}
+                }
+                default  { $w.Background = [System.Windows.Media.Brushes]::Black }
+            }
+            $w.ShowDialog() | Out-Null
+        } catch {}
+    }
+
+    $script:CurtainJob = $null
+
+    # Compile C# screen capture + input in this runspace
+    $script:HasScreen = $false
+    try {
+        Add-Type -ReferencedAssemblies 'System.Drawing','System.Windows.Forms' -TypeDefinition @'
+using System; using System.Drawing; using System.Drawing.Imaging;
+using System.IO; using System.Windows.Forms; using System.Runtime.InteropServices;
 public class RmmScreen {
-    public static int W { get { return Screen.PrimaryScreen.Bounds.Width; } }
-    public static int H { get { return Screen.PrimaryScreen.Bounds.Height; } }
-
+    public static int W() { return Screen.PrimaryScreen.Bounds.Width; }
+    public static int H() { return Screen.PrimaryScreen.Bounds.Height; }
     public static string Grab(int maxW, int maxH) {
         var b = Screen.PrimaryScreen.Bounds;
-        using (var bmp = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb)) {
-            using (var g = Graphics.FromImage(bmp))
-                g.CopyFromScreen(b.Location, Point.Empty, b.Size);
-            float scale = Math.Min((float)maxW / b.Width, (float)maxH / b.Height);
-            if (scale >= 1f) return ToJpeg(bmp);
-            int nw = (int)(b.Width * scale), nh = (int)(b.Height * scale);
-            using (var small = new Bitmap(bmp, new Size(nw, nh)))
-                return ToJpeg(small);
+        using (var bmp = new Bitmap(b.Width, b.Height))
+        using (var g   = Graphics.FromImage(bmp)) {
+            g.CopyFromScreen(b.Location, Point.Empty, b.Size);
+            float s = Math.Min((float)maxW/b.Width, (float)maxH/b.Height);
+            int nw=(int)(b.Width*s), nh=(int)(b.Height*s);
+            using (var sm = new Bitmap(bmp, nw, nh))
+            using (var ms = new MemoryStream()) {
+                sm.Save(ms, ImageFormat.Jpeg);
+                return Convert.ToBase64String(ms.ToArray());
+            }
         }
-    }
-    static string ToJpeg(Bitmap bmp) {
-        using (var ms = new MemoryStream()) {
-            var enc  = GetEncoder(ImageFormat.Jpeg);
-            var pars = new EncoderParameters(1);
-            pars.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 55L);
-            bmp.Save(ms, enc, pars);
-            return Convert.ToBase64String(ms.ToArray());
-        }
-    }
-    static ImageCodecInfo GetEncoder(ImageFormat fmt) {
-        foreach (var c in ImageCodecInfo.GetImageDecoders())
-            if (c.FormatID == fmt.Guid) return c;
-        return null;
     }
 }
-
 public class RmmInput {
-    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
-    [DllImport("user32.dll")] static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr i);
-    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr i);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
+    [DllImport("user32.dll")] static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr i);
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk,byte sc,uint f,UIntPtr i);
     [DllImport("user32.dll")] public static extern bool LockWorkStation();
-
-    public static void Move(int x, int y)  { SetCursorPos(x, y); }
-    public static void Click(int x, int y, bool right) {
-        SetCursorPos(x, y);
-        if (right) { mouse_event(0x0008,0,0,0,UIntPtr.Zero); mouse_event(0x0010,0,0,0,UIntPtr.Zero); }
-        else       { mouse_event(0x0002,0,0,0,UIntPtr.Zero); mouse_event(0x0004,0,0,0,UIntPtr.Zero); }
-    }
-    public static void Scroll(int dy) { mouse_event(0x0800,0,0,(uint)(dy*120),UIntPtr.Zero); }
-    public static void KeyTap(byte vk) { keybd_event(vk,0,0,UIntPtr.Zero); keybd_event(vk,0,2,UIntPtr.Zero); }
-
-    static readonly System.Collections.Generic.Dictionary<string,byte> KeyMap =
-        new System.Collections.Generic.Dictionary<string,byte>(StringComparer.OrdinalIgnoreCase) {
-            {"Enter",0x0D},{"Tab",0x09},{"Escape",0x1B},{"Backspace",0x08},{"Delete",0x2E},
-            {"Control",0x11},{"Alt",0x12},{"Shift",0x10},{"Win",0x5B},
-            {"ArrowLeft",0x25},{"ArrowUp",0x26},{"ArrowRight",0x27},{"ArrowDown",0x28},
-            {"Home",0x24},{"End",0x23},{"PageUp",0x21},{"PageDown",0x22},
-            {"F1",0x70},{"F2",0x71},{"F3",0x72},{"F4",0x73},{"F5",0x74},
-            {"F6",0x75},{"F7",0x76},{"F8",0x77},{"F9",0x78},{"F10",0x79},
-            {"F11",0x7A},{"F12",0x7B}
-        };
-
-    public static void TypeKey(string key) {
-        byte vk;
-        if (KeyMap.TryGetValue(key, out vk)) { KeyTap(vk); return; }
-        if (key.Length == 1) {
-            short res = VkKeyScan(key[0]);
-            vk = (byte)(res & 0xFF);
-            bool shift = (res >> 8 & 1) != 0;
-            if (shift) keybd_event(0x10,0,0,UIntPtr.Zero);
-            KeyTap(vk);
-            if (shift) keybd_event(0x10,0,2,UIntPtr.Zero);
-        }
-    }
     [DllImport("user32.dll")] static extern short VkKeyScan(char c);
-}
-'@ 2>$null } catch { Write-Host "Screen/input helpers unavailable (headless)" }
-
-# ── Metrics ───────────────────────────────────────────────────────────────────
-function Get-Metrics {
-    $cpu  = [math]::Round((Get-WmiObject Win32_Processor | Measure-Object LoadPercentage -Average).Average, 1)
-    $os   = Get-WmiObject Win32_OperatingSystem
-    $mem  = [math]::Round((1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize) * 100, 1)
-    $disk = Get-PSDrive C
-    $diskPct = [math]::Round($disk.Used / ($disk.Used + $disk.Free) * 100, 1)
-    return @{ cpu_percent=$cpu; memory_percent=$mem; disk_percent=$diskPct }
-}
-
-function Get-LocalIP {
-    try {
-        $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Sort-Object RouteMetric | Select-Object -First 1
-        return (Get-NetIPAddress -InterfaceIndex $r.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop).IPAddress
-    } catch { return '0.0.0.0' }
-}
-
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
-function Invoke-Api($Method, $Path, $Body) {
-    $uri = "$Server/api$Path"
-    $headers = @{ 'Content-Type'='application/json' }
-    $json = if ($Body) { $Body | ConvertTo-Json -Depth 10 -Compress } else { $null }
-    try {
-        $r = Invoke-WebRequest -UseBasicParsing -Uri $uri -Method $Method -Body $json -Headers $headers -TimeoutSec 10
-        return $r.Content | ConvertFrom-Json
-    } catch { return $null }
-}
-
-# ── Heartbeat + command queue ─────────────────────────────────────────────────
-function Send-Heartbeat {
-    $m = Get-Metrics
-    $payload = @{
-        agent_id       = $AgentId
-        token          = $Token
-        hostname       = $env:COMPUTERNAME
-        os             = (Get-WmiObject Win32_OperatingSystem).Caption
-        platform       = 'windows'
-        version        = '2.0.0'
-        ip             = (Get-LocalIP)
-        user           = $env:USERNAME
-        group          = 'default'
-        tags           = ''
-        cpu_percent    = $m.cpu_percent
-        memory_percent = $m.memory_percent
-        disk_percent   = $m.disk_percent
+    static System.Collections.Generic.Dictionary<string,byte> km =
+        new System.Collections.Generic.Dictionary<string,byte>(StringComparer.OrdinalIgnoreCase){
+            {"Enter",13},{"Tab",9},{"Escape",27},{"Backspace",8},{"Delete",46},
+            {"Control",17},{"Alt",18},{"Shift",16},{"Space",32},
+            {"ArrowLeft",37},{"ArrowUp",38},{"ArrowRight",39},{"ArrowDown",40},
+            {"F1",112},{"F2",113},{"F3",114},{"F4",115},{"F5",116},{"F6",117},
+            {"F7",118},{"F8",119},{"F9",120},{"F10",121},{"F11",122},{"F12",123}
+        };
+    public static void Move(int x,int y){SetCursorPos(x,y);}
+    public static void Click(int x,int y,bool right){
+        SetCursorPos(x,y);
+        if(right){mouse_event(8,0,0,0,UIntPtr.Zero);mouse_event(16,0,0,0,UIntPtr.Zero);}
+        else     {mouse_event(2,0,0,0,UIntPtr.Zero);mouse_event(4,0,0,0,UIntPtr.Zero);}
     }
-    $resp = Invoke-Api POST '/agent/heartbeat' $payload
-    if ($resp -and $resp.commands) { return $resp.commands }
-    return @()
-}
-
-function Send-Result($CmdId, $ExitCode, $Output) {
-    Invoke-Api POST "/agent/command/$CmdId/result" @{
-        status    = if ($ExitCode -eq 0) { 'done' } else { 'failed' }
-        exit_code = $ExitCode
-        output    = $Output.Substring(0, [Math]::Min($Output.Length, 100000))
-    } | Out-Null
-}
-
-function Run-Command($CmdId, $Shell, $Command) {
-    try {
-        if ($Shell -eq 'curtain') {
-            Run-Curtain $Command
-            Send-Result $CmdId 0 'Curtain updated'
-            return
+    public static void Scroll(int dy){mouse_event(0x0800,0,0,(uint)(dy*120),UIntPtr.Zero);}
+    public static void TypeKey(string key){
+        byte vk;
+        if(km.TryGetValue(key,out vk)){
+            keybd_event(vk,0,0,UIntPtr.Zero);keybd_event(vk,0,2,UIntPtr.Zero);return;
         }
-        $proc = if ($Shell -eq 'powershell') {
-            Start-Process powershell -ArgumentList '-NoProfile','-Command',$Command `
-                -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:TEMP\rmm_out.txt" `
-                -RedirectStandardError "$env:TEMP\rmm_err.txt"
-        } elseif ($Shell -eq 'cmd') {
-            Start-Process cmd -ArgumentList '/c',$Command `
-                -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:TEMP\rmm_out.txt" `
-                -RedirectStandardError "$env:TEMP\rmm_err.txt"
-        } else {
-            Start-Process $Shell -ArgumentList '-c',$Command `
-                -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:TEMP\rmm_out.txt" `
-                -RedirectStandardError "$env:TEMP\rmm_err.txt"
+        if(key.Length==1){
+            short r=VkKeyScan(key[0]); vk=(byte)(r&0xFF);
+            bool sh=((r>>8)&1)!=0;
+            if(sh)keybd_event(16,0,0,UIntPtr.Zero);
+            keybd_event(vk,0,0,UIntPtr.Zero);keybd_event(vk,0,2,UIntPtr.Zero);
+            if(sh)keybd_event(16,0,2,UIntPtr.Zero);
         }
-        $out = (Get-Content "$env:TEMP\rmm_out.txt" -Raw -ErrorAction SilentlyContinue) + `
-               (Get-Content "$env:TEMP\rmm_err.txt" -Raw -ErrorAction SilentlyContinue)
-        Send-Result $CmdId $proc.ExitCode ($out -replace $null,'')
-    } catch {
-        Send-Result $CmdId 1 $_.Exception.Message
     }
 }
+'@
+        $script:HasScreen = $true
+    } catch {}
 
-# ── Curtain overlays (WPF) ────────────────────────────────────────────────────
-$script:CurtainJob = $null
-
-function Run-Curtain($action) {
-    if ($script:CurtainJob) { Stop-Job $script:CurtainJob -PassThru | Remove-Job; $script:CurtainJob = $null }
-    if ($action -eq 'remove') { return }
-
-    $wpfCode = switch -Wildcard ($action) {
-        'black'   { 'window.Background = [System.Windows.Media.Brushes]::Black' }
-        'bsod'    { 'window.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(0,120,215); $tb=[System.Windows.Controls.TextBlock]::new(); $tb.Text=":("; $tb.Foreground=[System.Windows.Media.Brushes]::White; $tb.FontSize=160; $tb.Margin=[System.Windows.Thickness]::new(80,80,0,0); $window.Content=$tb' }
-        'lock'    { '[System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer([System.Runtime.InteropServices.Marshal]::GetExportedFunctionPointer([System.Runtime.InteropServices.Marshal]::LoadLibrary("user32.dll"),"LockWorkStation"),[Action]).Invoke()'; return }
-        'blanklok'{ Run-Curtain 'black'; Start-Sleep 1; [RmmInput]::LockWorkStation() | Out-Null; return }
-        'logoff'  { Start-Process logoff; return }
-        'update'  { 'window.Background=[System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(26,26,26); $tb=[System.Windows.Controls.TextBlock]::new(); $tb.Text="Working on updates`n100% complete"; $tb.Foreground=[System.Windows.Media.Brushes]::White; $tb.FontSize=36; $tb.TextAlignment="Center"; $tb.VerticalAlignment="Center"; $tb.HorizontalAlignment="Center"; $window.Content=$tb' }
-        default   { 'window.Background = [System.Windows.Media.Brushes]::Black' }
+    function Send-WsText($ws, $text) {
+        try {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+            $seg   = [System.ArraySegment[byte]]$bytes
+            $ws.SendAsync($seg,
+                [System.Net.WebSockets.WebSocketMessageType]::Text,
+                $true,
+                [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        } catch {}
     }
 
-    $script:CurtainJob = Start-Job -ScriptBlock {
-        param($code)
-        Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
-        $window = [System.Windows.Window]::new()
-        $window.WindowStyle   = 'None'
-        $window.WindowState   = 'Maximized'
-        $window.Topmost       = $true
-        $window.ResizeMode    = 'NoResize'
-        Invoke-Expression $code
-        $window.ShowDialog() | Out-Null
-    } -ArgumentList $wpfCode
-}
-
-# ── WebSocket connection ───────────────────────────────────────────────────────
-$script:WsConnected  = $false
-$script:RemoteActive = $false
-$script:ShellProc    = $null
-$script:SessionId    = ''
-
-function Start-WsConnection {
     $wsUrl = $Server -replace '^http','ws'
-    $uri   = [System.Uri]"$wsUrl/ws/agent/$AgentId`?token=$Token"
-    $ws    = [System.Net.WebSockets.ClientWebSocket]::new()
-    $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(20)
+    $uri   = [System.Uri]("$wsUrl/ws/agent/$AgentId`?token=$Token")
+    $buf   = [byte[]]::new(65536)
 
-    try {
-        $ws.ConnectAsync($uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
-        $script:WsConnected = $true
-        Write-Host "WS connected"
-    } catch {
-        Write-Host "WS connect failed: $_"
-        return
-    }
+    while ($true) {
+        $ws = $null
+        try {
+            $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+            $ws.Options.KeepAliveInterval = [System.TimeSpan]::FromSeconds(20)
+            $ws.ConnectAsync($uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
 
-    # Remote desktop sender thread
-    $remoteThread = [System.Threading.Thread]::new([System.Threading.ThreadStart]{
-        while ($true) {
-            if ($script:RemoteActive -and $script:WsConnected) {
+            $remoteActive = $false
+            $deviceId     = $null
+            $sessionId    = $null
+            $lastFrame    = [System.DateTime]::MinValue
+
+            while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+
+                # If remote is active, use a short-timeout receive so we can send frames
+                $cts = [System.Threading.CancellationTokenSource]::new()
+                if ($remoteActive) { $cts.CancelAfter(100) } else { $cts.CancelAfter(5000) }
+
+                $result = $null
                 try {
-                    $hasScreen = [bool](Get-Command -Name 'RmmScreen' -ErrorAction SilentlyContinue) -or ([System.AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetType('RmmScreen') } | Where-Object { $_ })
-                    if ($hasScreen) {
-                        $b64   = [RmmScreen]::Grab(1280, 720)
-                        $frame = @{type='frame';data=$b64;w=[RmmScreen]::W;h=[RmmScreen]::H;device_id=$script:DeviceId;session_id=$script:SessionId} | ConvertTo-Json -Compress
-                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($frame)
-                        $ws.SendAsync([ArraySegment[byte]]$bytes,[System.Net.WebSockets.WebSocketMessageType]::Text,$true,[System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+                    $seg    = [System.ArraySegment[byte]]$buf
+                    $result = $ws.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
+                } catch [System.OperationCanceledException] {
+                    # Timeout — send a frame if remote is active
+                } catch {
+                    break
+                } finally {
+                    $cts.Dispose()
+                }
+
+                # Send a frame if needed
+                if ($remoteActive -and $script:HasScreen) {
+                    $now = [System.DateTime]::UtcNow
+                    if (($now - $lastFrame).TotalMilliseconds -ge 100) {
+                        try {
+                            $b64   = [RmmScreen]::Grab(1280,720)
+                            $w     = [RmmScreen]::W()
+                            $h     = [RmmScreen]::H()
+                            $didStr = if ($deviceId) { $deviceId } else { 'null' }
+                            $sidStr = if ($sessionId) { '"' + $sessionId + '"' } else { 'null' }
+                            Send-WsText $ws ('{"type":"frame","data":"' + $b64 + '","w":' + $w + ',"h":' + $h + ',"device_id":' + $didStr + ',"session_id":' + $sidStr + '}')
+                            $lastFrame = $now
+                        } catch {}
+                    }
+                }
+
+                if (-not $result) { continue }
+                if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { break }
+
+                try {
+                    $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $result.Count)
+                    $msg  = $text | ConvertFrom-Json
+                    if ($msg.session_id) { $sessionId = $msg.session_id }
+                    if ($msg.device_id)  { $deviceId  = [string]$msg.device_id }
+
+                    switch ($msg.type) {
+                        'remote_start' { $remoteActive = $true  }
+                        'remote_stop'  { $remoteActive = $false }
+                        'remote_input' {
+                            switch ($msg.event) {
+                                'move'   { try { [RmmInput]::Move([int]$msg.x,[int]$msg.y) } catch {} }
+                                'click'  { try { [RmmInput]::Click([int]$msg.x,[int]$msg.y,($msg.button -eq 1)) } catch {} }
+                                'scroll' { try { [RmmInput]::Scroll([int]$msg.dy) } catch {} }
+                                'key'    { try { [RmmInput]::TypeKey([string]$msg.key) } catch {} }
+                            }
+                        }
+                        'curtain' {
+                            $a = $msg.action
+                            # Kill any existing curtain overlay first
+                            if ($script:CurtainJob) {
+                                try { Stop-Job  $script:CurtainJob -ErrorAction SilentlyContinue } catch {}
+                                try { Remove-Job $script:CurtainJob -Force -ErrorAction SilentlyContinue } catch {}
+                                $script:CurtainJob = $null
+                            }
+                            if ($a -eq 'lock' -or $a -eq 'blanklok') {
+                                try { [RmmInput]::LockWorkStation() | Out-Null } catch {}
+                            } elseif ($a -ne 'remove') {
+                                $script:CurtainJob = Start-Job -ScriptBlock $LocalCurtainScript -ArgumentList $a
+                            }
+                        }
+                        'key' {
+                            foreach ($k in @($msg.keys)) {
+                                try { [RmmInput]::TypeKey([string]$k) } catch {}
+                            }
+                        }
+                        'keepawake' {
+                            # Move mouse slightly to prevent sleep
+                            try { [RmmInput]::Move(200,200); [RmmInput]::Move(201,201) } catch {}
+                        }
                     }
                 } catch {}
-                [System.Threading.Thread]::Sleep(100)
-            } else {
-                [System.Threading.Thread]::Sleep(200)
             }
+        } catch {}
+        finally {
+            try { if ($ws) { $ws.Dispose() } } catch {}
         }
-    })
-    $remoteThread.IsBackground = $true
-    $remoteThread.Start()
-
-    # WS receive loop
-    $buf = [byte[]]::new(65536)
-    while ($ws.State -eq 'Open') {
-        try {
-            $seg    = [ArraySegment[byte]]$buf
-            $result = $ws.ReceiveAsync($seg, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
-            if ($result.MessageType -eq 'Close') { break }
-            $json   = [System.Text.Encoding]::UTF8.GetString($buf, 0, $result.Count)
-            $msg    = $json | ConvertFrom-Json
-            $script:SessionId = $msg.session_id
-            $script:DeviceId  = $msg.device_id
-
-            switch ($msg.type) {
-                'terminal_input' {
-                    if (-not $script:ShellProc -or $script:ShellProc.HasExited) {
-                        $script:ShellProc = Start-Process powershell -ArgumentList '-NoLogo','-NoExit' `
-                            -PassThru -WindowStyle Hidden `
-                            -RedirectStandardInput  "$env:TEMP\rmm_stdin.txt" `
-                            -RedirectStandardOutput "$env:TEMP\rmm_stdout.txt" `
-                            -RedirectStandardError  "$env:TEMP\rmm_stderr.txt"
-                    }
-                    # Forward input
-                    [System.IO.File]::AppendAllText("$env:TEMP\rmm_stdin.txt", $msg.data)
-                    # Send output back
-                    $out = [System.IO.File]::ReadAllText("$env:TEMP\rmm_stdout.txt") + `
-                           [System.IO.File]::ReadAllText("$env:TEMP\rmm_stderr.txt")
-                    if ($out) {
-                        $reply = @{type='terminal_output';data=$out;session_id=$script:SessionId} | ConvertTo-Json -Compress
-                        $rb = [System.Text.Encoding]::UTF8.GetBytes($reply)
-                        $ws.SendAsync([ArraySegment[byte]]$rb,[System.Net.WebSockets.WebSocketMessageType]::Text,$true,[System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
-                    }
-                }
-                'remote_start'  { $script:RemoteActive = $true }
-                'remote_stop'   { $script:RemoteActive = $false }
-                'remote_input'  {
-                    switch ($msg.event) {
-                        'move'  { [RmmInput]::Move($msg.x, $msg.y) }
-                        'click' { [RmmInput]::Click($msg.x, $msg.y, ($msg.button -eq 1)) }
-                        'scroll'{ [RmmInput]::Scroll($msg.dy) }
-                        'key'   { [RmmInput]::TypeKey($msg.key) }
-                    }
-                }
-                'curtain'    { Run-Curtain $msg.action }
-                'key'        { foreach ($k in $msg.keys) { [RmmInput]::TypeKey($k) } }
-                'keepawake'  {
-                    if ($msg.enabled) {
-                        Add-Type -Name WinPwr -Namespace RMM -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint s);'
-                        [RMM.WinPwr]::SetThreadExecutionState(0x80000003) | Out-Null
-                    }
-                }
-            }
-        } catch { break }
-    }
-    $script:WsConnected  = $false
-    $script:RemoteActive = $false
-    try { $ws.Dispose() } catch {}
-}
-
-# ── Main loop ─────────────────────────────────────────────────────────────────
-Write-Host "BasicRMM Agent starting — $AgentId"
-Write-Host "Server: $Server"
-
-# WebSocket in background thread
-$wsThread = [System.Threading.Thread]::new([System.Threading.ThreadStart]{
-    while ($true) {
-        try { Start-WsConnection } catch {}
         Start-Sleep 5
     }
-})
-$wsThread.IsBackground = $true
-$wsThread.Start()
+}
 
-# Heartbeat loop
+# Curtain WPF overlay job script
+$CurtainJobScript = {
+    param([string]$Action)
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        if ($Action -eq 'logoff') { logoff; return }
+        Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+        if ($Action -eq 'lock') {
+            Add-Type -Name U2 -Namespace W2 -MemberDefinition '[DllImport("user32.dll")]public static extern bool LockWorkStation();'
+            [W2.U2]::LockWorkStation() | Out-Null; return
+        }
+        if ($Action -eq 'remove') { return }
+        $w = [System.Windows.Window]::new()
+        $w.WindowStyle    = 'None'
+        $w.WindowState    = 'Maximized'
+        $w.Topmost        = $true
+        $w.AllowsTransparency = $false
+        switch ($Action) {
+            'black'  { $w.Background = [System.Windows.Media.Brushes]::Black }
+            'bsod'   {
+                $w.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(0,120,215)
+                $sp = [System.Windows.Controls.StackPanel]::new()
+                $t1 = [System.Windows.Controls.TextBlock]::new()
+                $t1.Text = ':)'; $t1.Foreground = [System.Windows.Media.Brushes]::White
+                $t1.FontSize = 120; $t1.Margin = [System.Windows.Thickness]::new(80,60,0,20)
+                $t2 = [System.Windows.Controls.TextBlock]::new()
+                $t2.Text = "Your PC ran into a problem and needs to restart.`nWe're collecting some error info, and then we'll restart for you.`n`n0% complete"
+                $t2.Foreground = [System.Windows.Media.Brushes]::White; $t2.FontSize = 24
+                $t2.Margin = [System.Windows.Thickness]::new(80,0,0,0); $t2.TextWrapping = 'Wrap'
+                $sp.Children.Add($t1); $sp.Children.Add($t2)
+                $w.Content = $sp
+            }
+            'update' {
+                $w.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(26,26,26)
+                $sp = [System.Windows.Controls.StackPanel]::new()
+                $sp.VerticalAlignment = 'Center'; $sp.HorizontalAlignment = 'Center'
+                $t1 = [System.Windows.Controls.TextBlock]::new()
+                $t1.Text = 'Working on updates  100%'; $t1.FontSize = 36
+                $t1.Foreground = [System.Windows.Media.Brushes]::White
+                $t1.HorizontalAlignment = 'Center'
+                $t2 = [System.Windows.Controls.TextBlock]::new()
+                $t2.Text = "Don't turn off your PC"; $t2.FontSize = 18
+                $t2.Foreground = [System.Windows.Media.Brushes]::Gray
+                $t2.HorizontalAlignment = 'Center'; $t2.Margin = [System.Windows.Thickness]::new(0,12,0,0)
+                $sp.Children.Add($t1); $sp.Children.Add($t2)
+                $w.Content = $sp
+            }
+            'config' {
+                $w.Background = [System.Windows.Media.SolidColorBrush][System.Windows.Media.Color]::FromRgb(10,10,40)
+                $t = [System.Windows.Controls.TextBlock]::new()
+                $t.Text = 'Configuring system...'; $t.FontSize = 28
+                $t.Foreground = [System.Windows.Media.Brushes]::Cyan
+                $t.VerticalAlignment = 'Center'; $t.HorizontalAlignment = 'Center'
+                $w.Content = $t
+            }
+            default  { $w.Background = [System.Windows.Media.Brushes]::Black }
+        }
+        $w.ShowDialog() | Out-Null
+    } catch {}
+}
+
+# ── Start the WebSocket background job ───────────────────────────────────────
+$script:WsJob = Start-Job -ScriptBlock $WsJobScript -ArgumentList $Server, $Token, $AgentId
+
+# ── Main heartbeat loop (runs directly in this runspace — no threads) ─────────
+Write-Log "Heartbeat loop starting..."
+
 while ($true) {
     try {
-        $cmds = Send-Heartbeat
-        foreach ($cmd in $cmds) {
-            $c = $cmd
-            $t = [System.Threading.Thread]::new([System.Threading.ThreadStart]{
-                Run-Command $c.id $c.shell $c.command
-            })
-            $t.IsBackground = $true
-            $t.Start()
+        $m = Get-Metrics
+        $payload = @{
+            agent_id       = $AgentId
+            token          = $Token
+            hostname       = $env:COMPUTERNAME
+            os             = $script:OsCaption
+            platform       = 'windows'
+            version        = '2.0.0'
+            ip             = $script:LocalIP
+            user           = $env:USERNAME
+            group          = 'default'
+            tags           = ''
+            cpu_percent    = $m.cpu
+            memory_percent = $m.mem
+            disk_percent   = $m.disk
+        }
+
+        $resp = Invoke-Post "$Server/api/agent/heartbeat" $payload
+
+        if ($resp -and $resp.commands) {
+            foreach ($cmd in $resp.commands) {
+                $cmdId  = $cmd.id
+                $shell  = $cmd.shell
+                $cmdStr = $cmd.command
+
+                if ($shell -eq 'curtain') {
+                    # WPF curtain in its own job
+                    Start-Job -ScriptBlock $CurtainJobScript -ArgumentList $cmdStr | Out-Null
+                    Invoke-Post "$Server/api/agent/command/$cmdId/result" @{
+                        token=$Token; status='done'; exit_code=0; output="Curtain '$cmdStr' applied"
+                    } | Out-Null
+                } else {
+                    # Execute and POST result inline (fast enough for 30s cycle)
+                    $exitCode = 0; $output = ''
+                    try {
+                        $tmp    = [System.IO.Path]::GetTempFileName()
+                        $errTmp = $tmp + '.err'
+                        if ($shell -eq 'powershell') {
+                            $proc = Start-Process powershell.exe `
+                                -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command `"$cmdStr`"" `
+                                -WindowStyle Hidden -Wait -PassThru `
+                                -RedirectStandardOutput $tmp -RedirectStandardError $errTmp
+                        } elseif ($shell -eq 'cmd') {
+                            $proc = Start-Process cmd.exe `
+                                -ArgumentList "/c $cmdStr" `
+                                -WindowStyle Hidden -Wait -PassThru `
+                                -RedirectStandardOutput $tmp -RedirectStandardError $errTmp
+                        } else {
+                            $output = "Shell not supported: $shell"; $exitCode = 1; $proc = $null
+                        }
+                        if ($proc) {
+                            $exitCode = $proc.ExitCode
+                            $out1 = if (Test-Path $tmp)    { Get-Content $tmp    -Raw } else { '' }
+                            $out2 = if (Test-Path $errTmp) { Get-Content $errTmp -Raw } else { '' }
+                            $output = ($out1 + $out2).TrimEnd()
+                            Remove-Item $tmp,$errTmp -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {
+                        $output = $_.Exception.Message; $exitCode = 1
+                    }
+
+                    $truncated = if ($output.Length -gt 50000) { $output.Substring(0,50000) } else { $output }
+                    Invoke-Post "$Server/api/agent/command/$cmdId/result" @{
+                        token     = $Token
+                        status    = if ($exitCode -eq 0) {'done'} else {'failed'}
+                        exit_code = $exitCode
+                        output    = $truncated
+                    } | Out-Null
+                }
+            }
+        }
+    } catch {
+        Write-Log "Heartbeat error: $_"
+    }
+
+    # Restart WS job if it stopped
+    try {
+        if ($script:WsJob.State -ne 'Running') {
+            Remove-Job $script:WsJob -Force -ErrorAction SilentlyContinue
+            $script:WsJob = Start-Job -ScriptBlock $WsJobScript -ArgumentList $Server,$Token,$AgentId
         }
     } catch {}
+
+    # Clean up finished jobs (curtain overlays etc.)
+    Get-Job | Where-Object { $_.State -in 'Completed','Failed','Stopped' } | Remove-Job -Force -ErrorAction SilentlyContinue
+
     Start-Sleep 30
 }

@@ -7,6 +7,7 @@ services:
     volumes:
       - rmm-data:/app/data
       - ./agent:/app/agent:ro
+      - ./server/web:/app/web:ro
     environment:
       - DATABASE_URL=sqlite:////app/data/rmm.db
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production}

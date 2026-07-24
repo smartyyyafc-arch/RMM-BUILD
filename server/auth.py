@@ -1,7 +1,9 @@
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError as JWTError
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -52,10 +54,12 @@ def require_admin(current: User = Depends(get_current_user)) -> User:
 
 def ensure_admin(db: Session):
     if not db.query(User).first():
+        password = secrets.token_urlsafe(16)
         db.add(User(
             username="admin",
             email="admin@example.com",
-            hashed_password=get_password_hash("admin"),
+            hashed_password=get_password_hash(password),
             is_admin=True
         ))
         db.commit()
+        print(f"\n[BasicRMM] INITIAL ADMIN CREDENTIALS — username: admin  password: {password}\n", flush=True)
