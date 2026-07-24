@@ -177,37 +177,101 @@ def serve_install_ps1(token: str = "", request: Request = None):
     Enables the clean one-liner: iex ((New-Object Net.WebClient).DownloadString('URL?token=TOKEN'))
     """
     import re
+    import hashlib
+    from urllib.parse import urlparse
+
     script_path = os.path.join(AGENT_FILES_DIR, "install.ps1")
     if not os.path.isfile(script_path):
         raise HTTPException(status_code=404, detail="Installer not found")
     with open(script_path, "r", encoding="utf-8") as f:
         script = f.read()
-    # Prefer the configured server_url; fall back to request origin respecting X-Forwarded-Proto
+
+    def _safe_server_url(raw: str) -> str:
+        """Accept only http(s)://host[:port]; drop any path/query and reject a
+        host with characters that don't belong in an authority. This prevents a
+        crafted Host / X-Forwarded-* header from injecting PowerShell."""
+        if not raw:
+            return ""
+        try:
+            p = urlparse(raw.strip())
+        except Exception:
+            return ""
+        if p.scheme not in ("http", "https") or not p.netloc:
+            return ""
+        if not re.match(r"^[A-Za-z0-9.\-]+(:\d+)?$", p.netloc):
+            return ""
+        return f"{p.scheme}://{p.netloc}"
+
+    def _ps_single(v: str) -> str:
+        """Escape a value for a PowerShell single-quoted literal (only ' needs
+        doubling; single-quoted strings are otherwise fully literal — no $, no
+        backtick interpolation)."""
+        return (v or "").replace("'", "''")
+
+    def _set_default(src: str, var: str, value: str) -> str:
+        """Replace a `[string]$Var = "..."` param default with a single-quoted,
+        escaped literal. A function replacement is used so backslashes / \\g / \\1
+        in the value are never interpreted as regex replacement metacharacters."""
+        pattern = r'\[string\]\$' + re.escape(var) + r'\s*=\s*"[^"]*"'
+        repl = f"[string]${var} = '{_ps_single(value)}'"
+        return re.sub(pattern, lambda _m: repl, src, count=1)
+
+    # Prefer the configured server_url; fall back to the (validated) request origin.
     db2 = SessionLocal()
     try:
         rows = db2.query(Setting).all()
         cfg = {s.key: s.value for s in rows}
     finally:
         db2.close()
-    server_url = cfg.get("server_url", "").strip()
+    server_url = _safe_server_url(cfg.get("server_url", ""))
     if not server_url:
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-        server_url = f"{proto}://{request.headers.get('host', request.url.netloc)}"
-    server_url = server_url.rstrip("/")
-    # Embed real server URL and token as param defaults so iex needs no extra args
-    script = re.sub(
-        r'\[string\]\$ServerUrl\s*=\s*"[^"]*"',
-        f'[string]$ServerUrl   = "{server_url}"',
-        script,
-    )
-    if token:
-        script = re.sub(
-            r'\[string\]\$EnrollToken\s*=\s*"[^"]*"',
-            f'[string]$EnrollToken = "{token}"',
-            script,
+        server_url = _safe_server_url(
+            f"{proto}://{request.headers.get('host', request.url.netloc)}"
         )
+    server_url = server_url.rstrip("/")
+
+    # Advertise the served binary's SHA256 so the installer can verify integrity.
+    agent_sha = ""
+    bin_path = os.path.join(AGENT_FILES_DIR, "rmmagent.exe")
+    if os.path.isfile(bin_path):
+        h = hashlib.sha256()
+        with open(bin_path, "rb") as bf:
+            for chunk in iter(lambda: bf.read(1024 * 1024), b""):
+                h.update(chunk)
+        agent_sha = h.hexdigest()
+
+    if server_url:
+        script = _set_default(script, "ServerUrl", server_url)
+    if token:
+        script = _set_default(script, "EnrollToken", token)
+    if agent_sha:
+        script = _set_default(script, "AgentSha256", agent_sha)
+
     from fastapi.responses import Response as FResponse
     return FResponse(content=script, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/get-agent")
+def download_agent_binary():
+    """Serve the agent binary with no `.exe` in the URL and no-cache headers, so
+    SmartScreen / AV policies that specifically target .exe downloads don't block
+    it. The installer's default download URL points here."""
+    path = os.path.join(AGENT_FILES_DIR, "rmmagent.exe")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Agent binary not found")
+    with open(path, "rb") as f:
+        data = f.read()
+    from fastapi.responses import Response as FResponse
+    return FResponse(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": "attachment; filename=update.tmp",
+            "Cache-Control": "no-store, no-cache",
+            "Pragma": "no-cache",
+        },
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -852,9 +916,21 @@ def delete_script(script_id: int, db: Session = Depends(get_db), current: User =
     s = db.query(Script).filter(Script.id == script_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Script not found")
+    # Automation.script_id references scripts.id and SQLite FK enforcement is ON,
+    # so a referenced script cannot be deleted directly (it 500s). Remove the
+    # dependent automations first, in one atomic commit — consistent with how
+    # delete_device cascades its child records.
+    dependents = db.query(Automation).filter(Automation.script_id == script_id).all()
+    for a in dependents:
+        db.delete(a)
+    name = s.name
     db.delete(s)
+    detail = f"deleted {name}"
+    if dependents:
+        detail += f" (+{len(dependents)} dependent automation(s))"
+    db.add(AuditLog(username=current.username, action="delete_script", detail=detail))
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "removed_automations": len(dependents)}
 
 
 @app.put("/api/scripts/{script_id}")

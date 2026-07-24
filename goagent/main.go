@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -71,13 +70,13 @@ func randomUUID() string {
 		hex.EncodeToString(b[10:16]))
 }
 
-// ── HTTP client (TLS skip — works with any cert) ──────────────────────────
+// ── HTTP client ────────────────────────────────────────────────────────────
 
+// Uses the default transport, which performs normal TLS certificate
+// verification against the system trust store (the server presents a valid
+// public certificate via Caddy).
 var httpClient = &http.Client{
 	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
 }
 
 func postJSON(path string, body interface{}) (map[string]interface{}, error) {
@@ -405,8 +404,8 @@ func selfUpdate() {
 
 // ── WebSocket agent channel ───────────────────────────────────────────────
 
+// Verifies the server's TLS certificate normally (no InsecureSkipVerify).
 var wsDialer = &websocket.Dialer{
-	TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
 	HandshakeTimeout: 15 * time.Second,
 }
 

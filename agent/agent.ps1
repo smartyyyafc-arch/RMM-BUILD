@@ -239,22 +239,26 @@ public class RmmInput {
             $sessionId    = $null
             $lastFrame    = [System.DateTime]::MinValue
 
+            # One cancellation source for the whole connection, cancelled ONLY on
+            # shutdown/close — never to poll. A single ReceiveAsync stays pending
+            # across loop iterations; we poll its completion with Task.Wait(timeout),
+            # which does NOT abort the socket. This stops the connect/close churn the
+            # old CancelAfter(100)-per-iteration code caused.
+            $connCts  = [System.Threading.CancellationTokenSource]::new()
+            $seg      = [System.ArraySegment[byte]]$buf
+            $recvTask = $ws.ReceiveAsync($seg, $connCts.Token)
+
             while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
 
-                # If remote is active, use a short-timeout receive so we can send frames
-                $cts = [System.Threading.CancellationTokenSource]::new()
-                if ($remoteActive) { $cts.CancelAfter(100) } else { $cts.CancelAfter(5000) }
-
-                $result = $null
+                # Wait briefly for the pending receive to finish (short while a
+                # remote session is streaming so frames stay responsive, longer
+                # otherwise). No cancellation — the receive is left intact.
+                $waitMs    = if ($remoteActive) { 40 } else { 1000 }
+                $completed = $false
                 try {
-                    $seg    = [System.ArraySegment[byte]]$buf
-                    $result = $ws.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
-                } catch [System.OperationCanceledException] {
-                    # Timeout — send a frame if remote is active
+                    $completed = $recvTask.Wait($waitMs)
                 } catch {
-                    break
-                } finally {
-                    $cts.Dispose()
+                    break   # receive faulted (socket error) — reconnect
                 }
 
                 # Send a frame if needed
@@ -273,11 +277,17 @@ public class RmmInput {
                     }
                 }
 
-                if (-not $result) { continue }
+                if (-not $completed) { continue }
+
+                $result = $recvTask.GetAwaiter().GetResult()
                 if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { break }
+                # Decode this message BEFORE starting the next receive (which reuses
+                # the same buffer), then immediately queue the next receive so no
+                # incoming message is missed while we process this one.
+                $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $result.Count)
+                $recvTask = $ws.ReceiveAsync($seg, $connCts.Token)
 
                 try {
-                    $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $result.Count)
                     $msg  = $text | ConvertFrom-Json
                     if ($msg.session_id) { $sessionId = $msg.session_id }
                     if ($msg.device_id)  { $deviceId  = [string]$msg.device_id }
@@ -321,6 +331,7 @@ public class RmmInput {
             }
         } catch {}
         finally {
+            try { if ($connCts) { $connCts.Cancel(); $connCts.Dispose() } } catch {}
             try { if ($ws) { $ws.Dispose() } } catch {}
         }
         Start-Sleep 5

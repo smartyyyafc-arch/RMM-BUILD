@@ -274,11 +274,15 @@ function buildInstallCmds() {
   // /install.ps1?token=... is served by the server with the correct URL and token
   // pre-embedded as param defaults, so no extra args needed when executing.
   const installUrl = `${su}/install.ps1?token=${tk}`;
-  // Pure in-memory execution: no file writes, no temp path issues, no execution policy block
-  // iex runs a string (not a file) so RestrictedExecutionPolicy doesn't apply
-  const ps1 = `[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; iex (iwr '${installUrl}' -UseBasicParsing).Content`;
-  const batch = `@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; iex (iwr '${installUrl}' -UseBasicParsing).Content"`;
-  const vbs = `Set o=CreateObject("WScript.Shell")\no.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; iex (iwr '${installUrl}' -UseBasicParsing).Content""",0,True`;
+  // Download install.ps1 to a temp file and run it with -File (not iex). Running
+  // from a file gives the script a $PSCommandPath, which lets it self-elevate via
+  // a single UAC prompt. curl.exe is preferred (no Mark-of-the-Web / SmartScreen,
+  // bypasses the WinINet cache that breaks WebClient under SYSTEM); iwr is the
+  // fallback. No inner double quotes so the batch/vbs wrappers stay clean.
+  const dl = `[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $u='${installUrl}'; $t=$env:TEMP+'\\rmm-install.ps1'; if(Get-Command curl.exe -EA SilentlyContinue){& curl.exe -L -s -o $t $u}else{iwr $u -UseBasicParsing -OutFile $t}; powershell -NoProfile -ExecutionPolicy Bypass -File $t`;
+  const ps1 = dl;
+  const batch = `@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "${dl}"`;
+  const vbs = `Set o=CreateObject("WScript.Shell")\no.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""${dl}""",0,True`;
   return {
     ps1,
     batch,

@@ -418,8 +418,11 @@ root.mainloop()
                         pil = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                 except Exception:
                     pil = ImageGrab.grab()
-                pil.thumbnail((1280, 720))
+                # Report the REAL screen dimensions (before downscaling) so the
+                # operator UI maps click coordinates onto the actual monitor; the
+                # transmitted JPEG itself is still downscaled for bandwidth.
                 w, h = pil.size
+                pil.thumbnail((1280, 720))
                 buf = io.BytesIO()
                 pil.save(buf, format="JPEG", quality=50)
                 b64 = base64.b64encode(buf.getvalue()).decode()
